@@ -79,15 +79,15 @@ Vagrant - это программное обеспечение с открыты
 	Vagrant.configure("2") do |config|
 	config.vm.box = "bento/ubuntu-18.04"
 	
-	# Ports foward
-	# For Orderer Container
+	# Проброс портов
+	# Для Orderer контейнера
 	config.vm.network "forwarded_port", guest: 7050, host: 7050
-	#Explorer
+	# Для Hyperledger Explorer
 	config.vm.network "forwarded_port", guest: 8080, host: 8080
-	#CouchDB
+	# Для CouchDB
 	config.vm.network "forwarded_port", guest: 5984, host: 5984
 	
-	# For Peer Container
+	# Для Peer контейнеров
 	config.vm.network "forwarded_port", guest: 7051, host: 7051
 	config.vm.network "forwarded_port", guest: 7052, host: 7052
 	config.vm.network "forwarded_port", guest: 8051, host: 8051
@@ -110,8 +110,58 @@ Vagrant - это программное обеспечение с открыты
 
 \subsection{Смарт контракты} \label{subsec:ch2/sec2/subsec2}
 
-% Есть СДК на нескольких языках, у нас на языке Go почему? ПОТОМУЧТО
+Написание смарт контрактов осуществляется на языках программирования общего назначения, таких как JavaScript, Java и Go. В данной работы смарт контракты написаны на языке Go - разработанным компанией Google языке со статической типизацией. Синтаксически схож с  языком С, однако имеет преимущества перед ним в виде безопасного доступа к памяти, сборкой мусора и удобством реализации параллельных вычислений.
+
+Смарт контракт на языке Go представляет из себя реализацию интерфейса Chaincode из пакета github.com/hyperledger/fabric-chaincode-go/shim.
  
+\begin{lstlisting}[caption={Интерфейс Chaincode},label={lst:ichaincode},language=Go]
+ type Chaincode interface {
+ 	
+ 	Init(stub ChaincodeStubInterface) pb.Response
+ 
+ 	Invoke(stub ChaincodeStubInterface) pb.Response
+ 	
+ }
+\end{lstlisting}
+ 
+Как видно из листинга \ref{lst:ichaincode} необходимо реализовать две функции: 
+
+\begin{enumerate}
+	\item Init - в ней закладывается логика инициализации внутреннего состояния смарт контракта. Она вызывается в момент создания контейнера смарт контракта.
+	\item Invoke - содержит бизнес логику смарт контракта
+\end{enumerate}
+
+Помимо этих двух функций необходимо зарегистрировать экземпляр  смарт контракт в среде выполнения Fabric. Кога клиентское приложение обращается к сети Fabric, оно передает ей название смарт контракта, название функции смарт котракта и набор параметров. Среда выполнения сопоставляет переданное название смарт контракта с экземплярами смарт контрактов зарегистрированными в среде выполнения и делегирует обращение клиента соответствующей функции соответствующего смарт контракта. Регистрация смарт контракта осуществляется в главной функции Go (main) посредством вызова функции shim.Start с передачей ей экземпляра смарт контракта в качестве параметра. Таким образом шаблон типичного смарт контракта на языке Go имеет вид представленный в листинге \ref{lst:chaincode-impl}.
+
+\begin{lstlisting}[caption={Реализация Chaincode},label={lst:chaincode-impl},language=Go]
+	package main
+	
+	import (
+		"fmt"
+		"github.com/hyperledger/fabric-chaincode-go/shim"
+		pb "github.com/hyperledger/fabric-protos-go/peer"
+	)
+	
+	// SimpleChaincode - пример смарт контракта
+	type SimpleChaincode struct {}
+	
+	func (t *SimpleChaincode) Init(stub shim.ChaincodeStubInterface) pb.Response {
+		// логика инициализации
+	}
+	
+	func (t *SimpleChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
+		// бизнес логика
+	}
+	
+	func main() {
+		err := shim.Start(new(SimpleChaincode))
+		if err != nil {
+			fmt.Printf("Ошибка регистрации смарт-контракта: %s", err)
+		}
+	}
+\end{lstlisting}
+
+
 \subsection{REST-сервер} \label{subsec:ch2/sec2/subsec3}
 Для обеспечения связи клиентского приложение со связующим ПО в качестве методологии RPC был выбран REST (Representational State Transfer — передача состояния представления)\cite{restful} Философия этого подхода заключается в том, что приложения моделируются как набор ресурсов, с которыми клиенты могут взаимодействовать (считывать данные, обновлять, удалять и т.д.). В наше время построение приложений с помощью архитектурного стиля REST вкупе с HTTP и JSON \cite{js-json} стало фактическим стандартом для создания микросервисов.
 Как уже упоминалось в \ref{sec:ch2:sec1}, Fabric SDK существует для нескольких языков программирования общего назначения, среди которых присутствует JavaScript \cite{pure-js}. 
