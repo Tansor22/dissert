@@ -144,7 +144,7 @@ Vagrant - это программное обеспечение с открыты
 	
 	// SimpleChaincode - пример смарт контракта
 	type SimpleChaincode struct {}
-	
+
 	func (t *SimpleChaincode) Init(stub shim.ChaincodeStubInterface) pb.Response {
 		// логика инициализации
 	}
@@ -161,60 +161,6 @@ Vagrant - это программное обеспечение с открыты
 	}
 \end{lstlisting}
 
-\begin{lstlisting}[caption={Sample Java},label={lst:sample-java},language=Java]
-	class HelloWorldApp {
-		public static void main(String[] args) {
-			System.out.println("Hello World!"); // Display the string.
-			for (int i = 0; i < 100; ++i) {
-				System.out.println(i);
-			}
-		}
-	}
-\end{lstlisting}
-
-\begin{lstlisting}[caption={Sample Java},label={lst:sample-java},language=Java]
-	class HelloWorldApp {
-		public static void main(String[] args) {
-			System.out.println("Hello World!"); // Display the string.
-			for (int i = 0; i < 100; ++i) {
-				System.out.println(i);
-			}
-		}
-	}
-\end{lstlisting}
-
-\begin{lstlisting}[caption={Sample JavaScript},label={lst:sample-java-script},language=JavaScript]
-const express = require('express');
-const bodyParser = require('body-parser');
-const middlewares = require("./middlewares");
-const app = express();
-
-// Configure app
-app.set('CONNECTION_PROFILE_PATH', '../profiles/dev-connection.yaml')
-app.set('NETWORK_NAME', 'airlinechannel')
-app.set('CONTRACT_ID', 'docs')
-app.set('FILESYSTEM_WALLET_PATH', '../gateway/user-wallet')
-app.use(bodyParser.json())
-
-// Interceptors
-app.use(middlewares.authenticateClient)
-app.use(middlewares.connectToHLF)
-
-// Routes
-app.post('/newDoc', middlewares.newDocument)
-app.post('/getDocs', middlewares.getDocuments)
-app.post('/signDoc', middlewares.signDocument)
-
-// Error handlers
-app.use(middlewares.errorHandler)
-
-// Launch server
-app.listen(8081, function () {
-	const host = this.address().address;
-	const port = this.address().port;
-	console.log("REST server listening at http://%s:%s", host, port)
-})
-\end{lstlisting}
 
 \subsection{REST-сервер} \label{subsec:ch2/sec2/subsec3}
 Для обеспечения связи клиентского приложение со связующим ПО в качестве методологии RPC был выбран REST (Representational State Transfer — передача состояния представления)\cite{restful} Философия этого подхода заключается в том, что приложения моделируются как набор ресурсов, с которыми клиенты могут взаимодействовать (считывать данные, обновлять, удалять и т.д.). В наше время построение приложений с помощью архитектурного стиля REST вкупе с HTTP и JSON \cite{js-json} стало фактическим стандартом для создания микросервисов.
