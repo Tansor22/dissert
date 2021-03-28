@@ -1,0 +1,112 @@
+% Общие стили оформления.
+% Возможные варианты значений ищите в описании библиотеки beamer
+\usetheme{Pittsburgh}
+\usecolortheme{whale}
+% Listings
+\definecolor{mediumgray}{rgb}{0.3, 0.4, 0.4}
+\definecolor{mediumblue}{rgb}{0.0, 0.0, 0.8}
+\definecolor{forestgreen}{rgb}{0.13, 0.55, 0.13}
+\definecolor{darkviolet}{rgb}{0.58, 0.0, 0.83}
+\definecolor{royalblue}{rgb}{0.25, 0.41, 0.88}
+\definecolor{crimson}{rgb}{0.86, 0.8, 0.24}
+
+\lstset{
+backgroundcolor=\color{white},  % choose the background color. You must add \usepackage{color}
+showspaces=false,               % show spaces adding particular underscores
+showstringspaces=false,         % underline spaces within strings
+showtabs=false,                 % show tabs within strings adding particular underscores
+%frame=leftline,                 % adds a frame of different types around the code
+rulecolor=\color{black},        % if not set, the frame-color may be changed on line-breaks within not-black text (e.g. commens (green here))
+tabsize=2,                      % sets default tabsize to 2 spaces
+captionpos=t,                   % sets the caption-position to top
+breaklines=true,                % sets automatic line breaking
+breakatwhitespace=false,        % sets if automatic breaks should only happen at whitespace
+basicstyle=\fontsize{12pt}{14pt}\selectfont\ttfamily,% the size of the fonts that are used for the code
+keywordstyle=\color{mediumblue},
+keywordstyle={[2]\color{darkviolet}},
+keywordstyle={[3]\color{royalblue}},
+commentstyle=\color{mediumgray}\upshape,
+emphstyle=\color{crimson},
+rulecolor=\color{black},
+numberstyle=\tiny\color{black},
+stringstyle=\color{forestgreen},   % string literal style
+escapeinside={\%*}{*)},         % if you want to add a comment within your code
+morekeywords={*,...},           % if you want to add more keywords to the set
+inputencoding=utf8,             % кодировка кода
+xleftmargin={\lmarg},           % Чтобы весь код и полоска с номерами строк была смещена влево, так чтобы цифры не вылезали за пределы текста слева
+}
+
+% \usetheme[secheader]{Boadilla}
+% \usecolortheme{seahorse}
+
+% выключение кнопок навигации
+\beamertemplatenavigationsymbolsempty
+
+% Размеры шрифтов
+\setbeamerfont{title}{size=\large}
+\setbeamerfont{subtitle}{size=\small}
+\setbeamerfont{author}{size=\normalsize}
+\setbeamerfont{institute}{size=\small}
+\setbeamerfont{date}{size=\normalsize}
+\setbeamerfont{bibliography item}{size=\small}
+\setbeamerfont{bibliography entry author}{size=\small}
+\setbeamerfont{bibliography entry title}{size=\small}
+\setbeamerfont{bibliography entry location}{size=\small}
+\setbeamerfont{bibliography entry note}{size=\small}
+% Аналогично можно настроить и другие размеры.
+% Названия классов элементов можно найти здесь
+% http://www.cpt.univ-mrs.fr/~masson/latex/Beamer-appearance-cheat-sheet.pdf
+
+% Цвет элементов
+\setbeamercolor{footline}{fg=blue}
+\setbeamercolor{bibliography item}{fg=black}
+\setbeamercolor{bibliography entry author}{fg=black}
+\setbeamercolor{bibliography entry title}{fg=black}
+\setbeamercolor{bibliography entry location}{fg=black}
+\setbeamercolor{bibliography entry note}{fg=black}
+% Аналогично можно настроить и другие цвета.
+% Названия классов элементов можно найти здесь
+% http://www.cpt.univ-mrs.fr/~masson/latex/Beamer-appearance-cheat-sheet.pdf
+
+% Убрать иконки перед списком литературы
+% https://tex.stackexchange.com/a/124271/104425
+\setbeamertemplate{bibliography item}{}
+
+% Использовать шрифт с засечками для формул
+% https://tex.stackexchange.com/a/34267/104425
+\usefonttheme[onlymath]{serif}
+
+% https://tex.stackexchange.com/a/291545/104425
+\makeatletter
+\def\beamer@framenotesbegin{% at beginning of slide
+    \usebeamercolor[fg]{normal text}
+    \gdef\beamer@noteitems{}%
+    \gdef\beamer@notes{}%
+}
+\makeatother
+
+% footer презентации
+\setbeamertemplate{footline}{
+    \leavevmode%
+    \hbox{%
+        \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,center]{}%
+            % И. О. Фамилия, Организация кратко
+            \thesisAuthorShort, \thesisOrganizationShort
+        \end{beamercolorbox}%
+        \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,center]{}%
+            % Город, 20XX
+            \thesisCity, \thesisYear
+        \end{beamercolorbox}%
+        \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,right]{}%
+            Стр. \insertframenumber{} из \inserttotalframenumber \hspace*{2ex}
+        \end{beamercolorbox}}%
+    \vskip0pt%
+}
+
+% вывод на экран заметок к презентации
+\ifnumequal{\value{presnotes}}{0}{}{
+    \setbeameroption{show notes}
+    \ifnumequal{\value{presnotes}}{2}{
+        \setbeameroption{show notes on second screen=\presposition}
+    }{}
+}

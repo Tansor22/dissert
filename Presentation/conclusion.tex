@@ -1,0 +1,30 @@
+\begin{frame}
+    \frametitle{Итоги}
+    {\Large Итоги}
+    \medskip
+    \begin{itemize}
+    	\item Итог 1
+        \item Итог 2
+        \item Итог 3
+    \end{itemize}
+\end{frame}
+
+\renewcommand*{\bibfont}{\footnotesize}
+\begin{frame} % публикации на нескольких страницах
+	\frametitle{Публикации}
+	%\nocite{}%
+
+	\ifnumequal{\value{bibliosel}}{0}{
+		\insertbiblioauthor
+	}{
+		\printbibliography%
+	}
+\end{frame}
+
+\begin{frame}[plain, noframenumbering] % последний слайд без оформления
+    \begin{center}
+        \Huge
+        Спасибо за внимание!
+    \end{center}
+        \makeend
+\end{frame}
