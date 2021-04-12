@@ -48,11 +48,7 @@
 Но при реализации такого подход возникает ряд вопросов, и первый из них где управлять ключами и сертификатами пользователей? Один из вариантов - управлять ими на стороне middleware. Однако в этом случае пользователи должны доверять хосту middleware, т.к. их приватные ключи оседают на его стороне. Однако в некоторых случаях пользователи могут не доверять организации, осуществляющей хостинг middleware. В таких случаях необходимо закладывать логику работы с приватными ключами и сертификатами на стороне клиентского приложения. Очевидно, что такой подход является более защищенным, однако он так же имеет недостаток в виде увлечения сложности приложения. А также в этом случае нарушается принцип единственной ответственности (SRP). \cite{solid}
 
 
-	%\section{Обеспечение безопасности REST-сервера} %\label{sec:ch2:sec2}
-	%Как миниммум юзать TLS/HTTPs и аутентификацию.
-
-\section{Выбор инструментов и технологий} \label{sec:ch2:sec2}
-\subsection{Архитектура} \label{subsec:ch2/sec2/subsec1}
+\section{Архитектура ПО} \label{sec:ch2/sec2}
 В \ref{sec:ch2:sec1} мы рассмотрели типичные архитектуры  Fabric ориентированных приложений. В данной работе выбор пал на архитектуру со связующим ПО с инкапсуляцией логики работы с сертификатами пользователей на стороне связующего ПО. В представленных в работе сценариях отношение между отдельными элементами доверительные, поэтому недостаток данного подхода не создает проблем. К очевидными плюсам данной архитектуры можно, также отнести легкую замену графического клиентского приложения, т.к. ему неизвестно существование бизнес сети, оно работает исключительно со связующим ПО по технологии RPC. \cite{grpc}
 На рисунке \ref{fig:sys_architecture} представлена схема архитектуры разработанного приложения.
 \begin{figure}[ht]
@@ -61,6 +57,10 @@
 	\caption{Архитектура разработанного приложения.}
 	\label{fig:sys_architecture}
 \end{figure}
+
+\section{Выбор инструментов и технологий} \label{sec:ch2:sec3}
+\subsection{Развертка бизнес сети} \label{subsec:ch2/sec3/subsec1}
+
 Для разработки и отладки смарт контрактов требуется их разворачивание на пирах бизнес сети. Проще всего разворачивать такую тестовую сеть на виртуальной машине, на которую пред установлено  все необходимое программное обеспечение, а именно:
 \begin{itemize}
 	\item Docker и Docker Compose \cite{docker};
@@ -71,6 +71,7 @@
 \end{itemize}
 
 На это виртуальной машине запускаются docker-контейнеры, представляющие из себя различные элементы бизнес сети Fabric (orderers, endorser, peers). Таким образом, образуются тестовая бизнес сеть внутри которой легко разрабатывать, отлаживать и тестировать смарт контракты. Запуск виртуальной машины и остановка среды разработки происходит с помощью Oracle Virtual Box \cite{oracle-vbox-site} и Vagrant \cite{vagrant-site}.
+
 Отдельно внимания заслуживает такой инструмент как Vagrant, поскольку он сильно облегчает развертку среды разработки. 
 Vagrant - это программное обеспечение с открытым исходным кодом, предназначенное для построения и поддержки виртуальных сред разработки на основе, например, Virtual Box, Hyper-V, Docker контейнеров. Основная задача этого инструмента - упростить конфигурационное управление (англ.software configuration management, SCM) \cite{scm} и улучшить продуктивность разработчика. 
 Создание виртуальной машины происходит при помощи файла конфигурации Vagrantfile, содержимое которого представлено в листинге \ref{lst:vagrantfile}.
@@ -108,7 +109,7 @@ Vagrant - это программное обеспечение с открыты
 \end{itemize}
 Таким образом, мы имеем удобную среду для разработки, отладки и тестирования смарт контрактов.
 
-\subsection{Смарт контракты} \label{subsec:ch2/sec2/subsec2}
+\subsection{Смарт контракты} \label{subsec:ch2/sec3/subsec2}
 
 Написание смарт контрактов осуществляется на языках программирования общего назначения, таких как JavaScript, Java и Go. В данной работы смарт контракты написаны на языке Go - разработанным компанией Google языке со статической типизацией. Синтаксически схож с  языком С, однако имеет преимущества перед ним в виде безопасного доступа к памяти, сборкой мусора и удобством реализации параллельных вычислений.
 
@@ -162,12 +163,51 @@ Vagrant - это программное обеспечение с открыты
 \end{lstlisting}
 
 
-\subsection{REST-сервер} \label{subsec:ch2/sec2/subsec3}
+Каждый раз при обращении клиента к смарт контракту среда выполнения Fabric создает экземпляр shim.ChaincodeStubInterface и делегирует вызов соответствующей функции смарт контракта с созданным экземпляром в качестве параметра. В листинге \ref{lst:chaincode-impl}, как формальный параметр интерфейса функций Chaincode фигурирует переменная stub типа shim.ChaincodeStubInterface. Путем манипулирования этим параметром смарт контракт взаимодействует с бизнес сетью Fabric. Stub представляет различные функции, одной из которых является извлечения информации о запросе клиента (название функции и параметров). Таким образом, реализация функции Invoke сводится к классической множественной диспетчеризации \cite{solid}, как показано в листинге \ref{lst:invoke-impl}.
+
+\begin{lstlisting}[caption={Шаблон реализации Chaincode.Invoke},label={lst:invoke-impl},language=Go]
+	...
+	
+	func (t *SimpleChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
+		...
+		function, args := stub.GetFunctionAndParameters()
+		
+		fmt.Println("Вызов функции Invoke : ", function, " параметры=", args)
+		
+		switch {
+			case function == "funcA":
+			return processA(stub, args)
+			case function == "funcB":
+			return processB(stub, args)
+			case function == "funcC":
+			return processC(stub, args)
+			...
+		}
+		...
+	}
+	
+	...
+\end{lstlisting}
+
+\subsection{REST-сервер} \label{subsec:ch2/sec3/subsec3}
+
 Для обеспечения связи клиентского приложение со связующим ПО в качестве методологии RPC был выбран REST (Representational State Transfer — передача состояния представления)\cite{restful} Философия этого подхода заключается в том, что приложения моделируются как набор ресурсов, с которыми клиенты могут взаимодействовать (считывать данные, обновлять, удалять и т.д.). В наше время построение приложений с помощью архитектурного стиля REST вкупе с HTTP и JSON \cite{js-json} стало фактическим стандартом для создания микросервисов.
+
 Как уже упоминалось в \ref{sec:ch2:sec1}, Fabric SDK существует для нескольких языков программирования общего назначения, среди которых присутствует JavaScript \cite{pure-js}. 
-%TODO: Node js \cite{node-js}, npm, express, nodemon \cite{nodemon}
+%TODO: Node js \cite{node-js}, npm, express, nodemon \cite{nodemon}, jwt token-based auth Nowadays developers prefer Token-Based Authentication instead of Session. Token-Based Authentication have lots of advantages over Session. We use JWT i.e. JSON Web Token to generate a token after user authentication, every time your front-end app makes an API call so you	r system should check whether the request has the valid token or not if it is there and it is valid then it considered as the valid user. JWT does not secure communication transport over non-secured connection like HTTP. JWT is mainly an authentication system and should only be used with HTTPS but JWT does not increase the security level of HTTPS. Maybe your inverted question would make more sense 
+%https://stackoverflow.com/questions/50429209/https-or-jwt-for-authentication/50429642
+
+In short, we use JWT to validate our API calls it is nothing to do with HTTP or HTTPS
 
 \subsection{Клиентское приложение}
- \label{subsec:ch2/sec2/subsec3}
+ \label{subsec:ch2/sec3/subsec4}
  
-%Т.К. мобильное приложение, а самый распространенная система Андроид то конечно же джава
+Выбор мобильного приложения в качестве клиентского в данном случае определяет язык программирования для его разработки.
+Под управлением операционной системы Android работает подавляющее число мобильных устройств. Так как предполагается эксплуатация ПО в среде Android, то для реализации ПО в работы выбран язык Java.
+ 
+Этот модуль является  клиентской стороной пользовательского интерфейса к 
+бизнес сети Fabric.  Используя это приложение,  установленное  на 
+смартфон,  клиент  может создавать, подписывать и просматривать документы своей организации.  Мобильное 
+приложение посылает REST API запросы и получает ответы в формате JSON. Эти 
+ответы  используются  для  предоставления  данных  через  понятные  пользователю интерфейсы.
+ 
