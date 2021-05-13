@@ -40,7 +40,7 @@
 % Затем, для вывода отдельных частей можно воспользоваться командой \includeonly
 % Ниже примеры использования команды:
 %
-\includeonly{Dissertation/contents,Dissertation/part1,Dissertation/part2,Dissertation/references}
+%\includeonly{Dissertation/contents,Dissertation/part1,Dissertation/part2,Dissertation/references}
 %\includeonly{Dissertation/contents,Dissertation/appendix,Dissertation/conclusion}
 %
 % Если все команды закомментированы, то документ будет выведен в PDF файл полностью
@@ -51,12 +51,12 @@
 
 %%% Структура диссертации (ГОСТ Р 7.0.11-2011, 4)
 %\include{Dissertation/title}           % < ==Титульный лист
-\includepdf[pages=1-2]{title_nir.pdf}	% Пока что НИР
+%\includepdf[pages=1-2]{title_nir.pdf}	% Пока что НИР
 \include{Dissertation/contents}        % Оглавление
-%\include{Dissertation/introduction}    % <== Введение
+\include{Dissertation/introduction}    % <== Введение
 \include{Dissertation/part1}           % Глава 1
 \include{Dissertation/part2}           % Глава 2
-%\include{Dissertation/part3}           % <== Глава 3
+\include{Dissertation/part3}           % <== Глава 3
 %\include{Dissertation/conclusion}      % <== Заключение
 %\include{Dissertation/acronyms}        % Список сокращений и условных обозначений
 %\include{Dissertation/dictionary}      % Словарь терминов

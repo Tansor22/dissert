@@ -193,21 +193,68 @@ Vagrant - это программное обеспечение с открыты
 
 Для обеспечения связи клиентского приложение со связующим ПО в качестве методологии RPC был выбран REST (Representational State Transfer — передача состояния представления)\cite{restful} Философия этого подхода заключается в том, что приложения моделируются как набор ресурсов, с которыми клиенты могут взаимодействовать (считывать данные, обновлять, удалять и т.д.). В наше время построение приложений с помощью архитектурного стиля REST вкупе с HTTP и JSON \cite{js-json} стало фактическим стандартом для создания микросервисов.
 
-Как уже упоминалось в \ref{sec:ch2:sec1}, Fabric SDK существует для нескольких языков программирования общего назначения, среди которых присутствует JavaScript \cite{pure-js}. 
-%TODO: Node js \cite{node-js}, npm, express, nodemon \cite{nodemon}, jwt token-based auth Nowadays developers prefer Token-Based Authentication instead of Session. Token-Based Authentication have lots of advantages over Session. We use JWT i.e. JSON Web Token to generate a token after user authentication, every time your front-end app makes an API call so you	r system should check whether the request has the valid token or not if it is there and it is valid then it considered as the valid user. JWT does not secure communication transport over non-secured connection like HTTP. JWT is mainly an authentication system and should only be used with HTTPS but JWT does not increase the security level of HTTPS. Maybe your inverted question would make more sense 
+Как уже упоминалось в \ref{sec:ch2:sec1}, Fabric SDK существует для нескольких языков программирования общего назначения, среди которых присутствует JavaScript \cite{pure-js}.
+
+\subsubsection{Защита сервера} \label{subsubsec:ch2/sec3/subsec4/subsubsec1}
+Слабым местом в представленной схеме \ref{fig:sys_architecture} является линия взаимодействия клиентского приложения со связующим ПО. Оно подвержено различным атакам, таким например как "Человек посередине" или MITM (англ. Man In The Middle) \cite{mitm-site}. Для предотвращения таких атак клиент и сервер взаимодействуют по защищенному транспортному протоколу HTTPS, основанному на криптографическом протоколе   SSL, призванным обеспечить безопасность передачи данных по сети. 
+В SSL используется ассиметричный алгоритм шифрования. Это означает что, для шифрования используется открытый ключ, а для дешифрования используется приватный ключ. Т.е. всего два ключа для каждой из сторон. Схема передачи данных для такого случая представлена на рисунке \ref{fig:ssl_scheme}
+
+\begin{figure}[ht]
+	\centering
+	\includegraphics [scale=1.0] {ssl_scheme}
+	\caption{Передача данных с использованием ассиметричного алгоритма шифрования.}
+	\label{fig:ssl_scheme}
+\end{figure}
+
+Хотя использование HTTPS не гарантирует всеобъемлющую безопасность, оно создает неимоверные трудности для злоумышленников.
+\subsubsection{JSON Web Token} \label{subsubsec:ch2/sec3/subsec4/subsubsec2}
+В наше время разработчики предпочитают использовать аутентификацию основанную на токенах (Token-Based Authentication), вместо привычных сессий. Подход с токенами имеет множество преимуществ перед подходом с сессиями. В разработанной системы для коммуникации клиентского приложения с серверной частью  используется JWT\cite{jwt-site} (Json Web Token). После аутентификации клиентского приложения через защищенный канал SSL, ему выдается сгенерированный JWT, который помещается в заголовке API запроса, каждый раз при обращении к API сервера, требующем идентификации личности пользователя, использующего клиентское приложение. Типовая схема работы описанного подхода представлена на рисунке \ref{jwt_scheme}.
+
+\begin{figure}[ht]
+	\centering
+	\includegraphics [scale=0.2] {jwt_scheme}
+	\caption{Схема работы с JWT.}
+	\label{fig:jwt_scheme}
+\end{figure}
+
+Структурно JWT токен состоит из трех частей: заголовка, данных и подписи. Заголовок и данные представлены в формате JSON объектов. В то время как подпись генерируется на основе первых двух частей с применением определенного алгоритма шифрования, указанного в заголовке токена. Примеры заголовка и данных приведены в листингах \ref{lst:jwt-header-sample} и \ref{lst:jwt-payload-sample}.
+
+\begin{lstlisting}[caption={Пример JWT загаловка},label={lst:jwt-header-sample},language=JavaScript]
+{
+	"alg": "HS512",
+	"typ": "JWT"
+}
+\end{lstlisting}
+
+\begin{lstlisting}[caption={Пример JWT данных},label={lst:jwt-payload-sample},language=JavaScript]
+	{
+		"sub": "12345",
+		"name": "John Gold",
+		"admin": true
+	}
+\end{lstlisting}
+
+JWT токен сериализуется к компактном ввиду путем применения алгоритма кодирования Base64-URL к заголовку и данным, после чего происходит конкатенация заголовка, данных и подписи с разделением этих элементов точками.
+Сгенерированный JWT токен для примеров из листингов \ref{lst:jwt-header-sample} и \ref{lst:jwt-payload-sample} будет иметь вид представленный в листинге \ref{lst:jwt-token-sample} (для наглядности были добавлены поясняющие комментарии и переводы строк, но в реально приложении JWT токен является одной строкой без пробелов).
+\begin{lstlisting}[caption={Пример сгенерированного JWT токена},label={lst:jwt-token-sample},language=JavaScript]
+# base64UrlEncode(header)
+eyJhbGciOiJIUzUxMiIsInR5cCI6IkpXVCJ9.
+# base64UrlEncode(payload)
+eyJzdWIiOiIxMjM0NSIsIm5hbWUiOiJKb2huIEdvbGQiLCJhZG1pbiI6dHJ1ZX0K.
+# signature
+LIHjWCBORSWMEibq-tnT8ue_deUqZx1K0XxCOXZRrBI
+
+\end{lstlisting}
+
+% .
+%TODO:  JWT does not secure communication transport over non-secured connection like HTTP. JWT is mainly an authentication system and should only be used with HTTPS but JWT does not increase the security level of HTTPS. Maybe your inverted question would make more sense 
+
 %https://stackoverflow.com/questions/50429209/https-or-jwt-for-authentication/50429642
-
-In short, we use JWT to validate our API calls it is nothing to do with HTTP or HTTPS
-
 \subsection{Клиентское приложение}
  \label{subsec:ch2/sec3/subsec4}
  
 Выбор мобильного приложения в качестве клиентского в данном случае определяет язык программирования для его разработки.
 Под управлением операционной системы Android работает подавляющее число мобильных устройств. Так как предполагается эксплуатация ПО в среде Android, то для реализации ПО в работы выбран язык Java.
  
-Этот модуль является  клиентской стороной пользовательского интерфейса к 
-бизнес сети Fabric.  Используя это приложение,  установленное  на 
-смартфон,  клиент  может создавать, подписывать и просматривать документы своей организации.  Мобильное 
-приложение посылает REST API запросы и получает ответы в формате JSON. Эти 
-ответы  используются  для  предоставления  данных  через  понятные  пользователю интерфейсы.
+Этот модуль является  клиентской стороной пользовательского интерфейса к бизнес сети Fabric.  Используя это приложение,  установленное  на смартфон,  клиент  может создавать, подписывать и просматривать документы своей организации.  Мобильное приложение посылает REST API запросы и получает ответы в формате JSON. Эти ответы  используются  для  предоставления  данных  через  понятные  пользователю интерфейсы.
  
