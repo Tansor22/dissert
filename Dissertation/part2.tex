@@ -81,20 +81,20 @@ Vagrant - это программное обеспечение с открыты
 	config.vm.box = "bento/ubuntu-18.04"
 	
 	# Проброс портов
-	# Для Orderer контейнера
-	config.vm.network "forwarded_port", guest: 7050, host: 7050
-	# Для Hyperledger Explorer
-	config.vm.network "forwarded_port", guest: 8080, host: 8080
 	# Для CouchDB
 	config.vm.network "forwarded_port", guest: 5984, host: 5984
+	# Для Hyperledger Explorer
+	config.vm.network "forwarded_port", guest: 8080, host: 8080
+	# Для Orderer контейнера
+	config.vm.network "forwarded_port", guest: 7050, host: 7050
 	
 	# Для Peer контейнеров
-	config.vm.network "forwarded_port", guest: 7051, host: 7051
 	config.vm.network "forwarded_port", guest: 7052, host: 7052
-	config.vm.network "forwarded_port", guest: 8051, host: 8051
+	config.vm.network "forwarded_port", guest: 9052, host: 9052
+	config.vm.network "forwarded_port", guest: 7051, host: 7051
 	config.vm.network "forwarded_port", guest: 8052, host: 8052
 	config.vm.network "forwarded_port", guest: 9051, host: 9051
-	config.vm.network "forwarded_port", guest: 9052, host: 9052
+	config.vm.network "forwarded_port", guest: 8051, host: 8051
 	config.vm.provision "shell", inline:  $script /home/vagrant/app/sdk/vagrant_node_modules
 	end
 \end{lstlisting}
@@ -138,26 +138,26 @@ Vagrant - это программное обеспечение с открыты
 	package main
 	
 	import (
-		"fmt"
-		"github.com/hyperledger/fabric-chaincode-go/shim"
 		pb "github.com/hyperledger/fabric-protos-go/peer"
+		"github.com/hyperledger/fabric-chaincode-go/shim"
+		"fmt"
 	)
 	
-	// SimpleChaincode - пример смарт контракта
-	type SimpleChaincode struct {}
+	// SampleSmartContract - пример смарт контракта
+	type SampleSmartContract struct {}
 
-	func (t *SimpleChaincode) Init(stub shim.ChaincodeStubInterface) pb.Response {
+	func (ssc *SampleSmartContract) Init(stub shim.ChaincodeStubInterface) pb.Response {
 		// логика инициализации
 	}
 	
-	func (t *SimpleChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
+	func (ssc *SampleSmartContract) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
 		// бизнес логика
 	}
 	
 	func main() {
-		err := shim.Start(new(SimpleChaincode))
-		if err != nil {
-			fmt.Printf("Ошибка регистрации смарт-контракта: %s", err)
+		e := shim.Start(new(SampleSmartContract))
+		if e != nil {
+			fmt.Printf("Ошибка регистрации смарт-контракта: %s", e)
 		}
 	}
 \end{lstlisting}
@@ -168,19 +168,19 @@ Vagrant - это программное обеспечение с открыты
 \begin{lstlisting}[caption={Шаблон реализации Chaincode.Invoke},label={lst:invoke-impl},language=Go]
 	...
 	
-	func (t *SimpleChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
+	func (t *SampleSmartContract) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
 		...
-		function, args := stub.GetFunctionAndParameters()
+		f, params := stub.GetFunctionAndParameters()
 		
-		fmt.Println("Вызов функции Invoke : ", function, " параметры=", args)
+		fmt.Println("Вызов функции Invoke : ", f, " параметры=", params)
 		
 		switch {
-			case function == "funcA":
-			return processA(stub, args)
-			case function == "funcB":
-			return processB(stub, args)
-			case function == "funcC":
-			return processC(stub, args)
+			case f == "funcA":
+			return processA(stub, params)
+			case f == "funcB":
+			return processB(stub, params)
+			case f == "funcC":
+			return processC(stub, params)
 			...
 		}
 		...
@@ -201,18 +201,18 @@ Vagrant - это программное обеспечение с открыты
 
 \begin{figure}[ht]
 	\centering
-	\includegraphics [scale=1.0] {ssl_scheme}
+	\includegraphics [scale=1.0] {ssl_scheme_rus}
 	\caption{Передача данных с использованием ассиметричного алгоритма шифрования.}
 	\label{fig:ssl_scheme}
 \end{figure}
 
 Хотя использование HTTPS не гарантирует всеобъемлющую безопасность, оно создает неимоверные трудности для злоумышленников.
 \subsubsection{JSON Web Token} \label{subsubsec:ch2/sec3/subsec4/subsubsec2}
-В наше время разработчики предпочитают использовать аутентификацию основанную на токенах (Token-Based Authentication), вместо привычных сессий. Подход с токенами имеет множество преимуществ перед подходом с сессиями. В разработанной системы для коммуникации клиентского приложения с серверной частью  используется JWT\cite{jwt-site} (Json Web Token). После аутентификации клиентского приложения через защищенный канал SSL, ему выдается сгенерированный JWT, который помещается в заголовке API запроса, каждый раз при обращении к API сервера, требующем идентификации личности пользователя, использующего клиентское приложение. Типовая схема работы описанного подхода представлена на рисунке \ref{jwt_scheme}.
+В наше время разработчики предпочитают использовать аутентификацию основанную на токенах (Token-Based Authentication), вместо привычных сессий. Подход с токенами имеет множество преимуществ перед подходом с сессиями. В разработанной системы для коммуникации клиентского приложения с серверной частью  используется JWT\cite{jwt-site} (Json Web Token). После аутентификации клиентского приложения через защищенный канал SSL, ему выдается сгенерированный JWT, который помещается в заголовке API запроса, каждый раз при обращении к API сервера, требующем идентификации личности пользователя, использующего клиентское приложение. Типовая схема работы описанного подхода представлена на рисунке \ref{fig:jwt_scheme}.
 
 \begin{figure}[ht]
 	\centering
-	\includegraphics [scale=0.2] {jwt_scheme}
+	\includegraphics [scale=0.4] {jwt_scheme_rus}
 	\caption{Схема работы с JWT.}
 	\label{fig:jwt_scheme}
 \end{figure}
@@ -257,4 +257,46 @@ LIHjWCBORSWMEibq-tnT8ue_deUqZx1K0XxCOXZRrBI
 Под управлением операционной системы Android работает подавляющее число мобильных устройств. Так как предполагается эксплуатация ПО в среде Android, то для реализации ПО в работы выбран язык Java.
  
 Этот модуль является  клиентской стороной пользовательского интерфейса к бизнес сети Fabric.  Используя это приложение,  установленное  на смартфон,  клиент  может создавать, подписывать и просматривать документы своей организации.  Мобильное приложение посылает REST API запросы и получает ответы в формате JSON. Эти ответы  используются  для  предоставления  данных  через  понятные  пользователю интерфейсы.
+
+\subsubsection{Пользовательские сценарии}
+ \label{subsec:ch2/sec3/subsec4/subsubsec1}
+Функциональные требования к клиентскому приложению следующие:
+\begin{itemize}
+	\item Создание  нового  документа.  Данный  сценарий  описывает  поведение пользователя,  включающее  в  себя  заполнение  полей  документа,  включая  выбор типа документа;
+	\item Просмотр  своих  документов.  Пользователь  видит,  созданные  им  ранее 
+	документы, их статусы;
+	\item Подписание документа. Пользователь перед подписанием может просмотреть 
+	всю  необходимую  информацию  о  документе,  а  затем  принять  решение  о 
+	дальнейшем действии: подписать, отклонить пс комментарием.
+\end{itemize}
+Все действия пользователя выполняются через графический интерфейс мобильного приложения. Удобнее всего представить работу приложения с точки зрения пользователя в виде UML диаграммы вариантов использования ПО. Соответствующие диаграммы приведены на рисунках \ref{fig:user-scenario-first}-\ref{fig:user-scenario-last}.
+
+\begin{figure}[H]
+	\centering
+	\includegraphics [scale=1.2] {AuthDiagram}
+	\caption{Аутентификация пользователя.}
+	\label{fig:user-scenario-first}
+\end{figure}
+\begin{figure}[H]
+	\centering
+	\includegraphics [scale=1.2] {MainDiagram}
+	\caption{Просмотр списка документов.}
+	\label{fig:user-scenario-view-docs}
+\end{figure}
+\begin{figure}[H]
+	\centering
+	\includegraphics [scale=0.8] {CreateDocDiagram}
+	\caption{Создание документов с использованием мастера и без.}
+	\label{fig:user-scenario-create-doc}
+\end{figure}
+\begin{figure}[H]
+	\centering
+	\includegraphics [scale=0.6] {ChangeDocDiagramRotated}
+	\caption{Редактирование существующего документа.}
+	\label{fig:user-scenario-last}
+\end{figure}
+
+С каждой активности, представленной на рисунках~\ref{fig:user-scenario-first}-\ref{fig:user-scenario-last}, за исключением активности аутентификации возможен переход к любой другой активности (за исключением, опять же, активности аутентификации) посредство навигационного меню, всегда находящегося под рукой пользователя. Такое меню является отличительным элементом многих мобильных приложений и играет не последнюю роль в вопросе "юзабилити"\cite{usability}.
+
+
  

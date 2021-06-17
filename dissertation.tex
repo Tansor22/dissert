@@ -39,8 +39,8 @@
 % промежуточные файлы были в наличии
 % Затем, для вывода отдельных частей можно воспользоваться командой \includeonly
 % Ниже примеры использования команды:
-%
-%\includeonly{Dissertation/contents,Dissertation/part1,Dissertation/part2,Dissertation/references}
+% на плагиат
+%\includeonly{Dissertation/introduction,Dissertation/part1,Dissertation/part2,Dissertation/part3,Dissertation/conclusion}
 %\includeonly{Dissertation/contents,Dissertation/appendix,Dissertation/conclusion}
 %
 % Если все команды закомментированы, то документ будет выведен в PDF файл полностью
@@ -50,14 +50,15 @@
 \input{common/renames}                 % Переопределение именований
 
 %%% Структура диссертации (ГОСТ Р 7.0.11-2011, 4)
-%\include{Dissertation/title}           % < ==Титульный лист
-%\includepdf[pages=1-2]{title_nir.pdf}	% Пока что НИР
+%\include{Dissertation/title}          
+\includepdf[pages=1-2]{title.pdf} % < ==Титульный лист
+%\includepdf[pages=1-3]{title-preddip-new.pdf}	% Уже не НИР
 \include{Dissertation/contents}        % Оглавление
 \include{Dissertation/introduction}    % <== Введение
 \include{Dissertation/part1}           % Глава 1
 \include{Dissertation/part2}           % Глава 2
 \include{Dissertation/part3}           % <== Глава 3
-%\include{Dissertation/conclusion}      % <== Заключение
+\include{Dissertation/conclusion}      % <== Заключение
 %\include{Dissertation/acronyms}        % Список сокращений и условных обозначений
 %\include{Dissertation/dictionary}      % Словарь терминов
 \include{Dissertation/references}      % <== Список литературы 
@@ -77,6 +78,6 @@
 \setlength{\otstuplen}{0pt}
 
 \setsecheadstyle{\basegostsectionfont}
-%\include{Dissertation/appendix}        % <== Приложения
+\include{Dissertation/appendix}        % <== Приложения
 
 \end{document}
