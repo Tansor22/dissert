@@ -6,8 +6,4743 @@
 \chapter{Исходный код} \label{app:B}
 
 \section{Исходный код сервера}\label{app:B1}
+\textbf{app.js}
+\begin{lstlisting}[language=JavaScript]
+const express = require('express');
+const https = require('https');
+const bodyParser = require('body-parser');
+const middlewares = require("./middlewares");
+const fs = require("fs");
+const app = express();
+const tools = require('./tools')
 
+
+// Configure app
+app.set('TEMPLATES', tools.configureTemplates())
+app.set('DOC_TYPES', tools.configureForms())
+app.set('CONNECTION_PROFILE_PATH', '../profiles/dev-connection.yaml')
+app.set('NETWORK_NAME', 'docschannel')
+app.set('CONTRACT_ID', 'docs')
+app.set('FILESYSTEM_WALLET_PATH', '../gateway/user-wallet')
+app.use(bodyParser.json())
+
+// Interceptors
+app.use(middlewares.common.configure)
+app.use(middlewares.common.verifyCert)
+
+// Routes
+require('./routes/auth.routes')(app);
+require('./routes/user.routes')(app);
+
+// Error handlers ???
+app.use(middlewares.common.errorHandler)
+
+// Configure server
+const key = fs.readFileSync(__dirname + '/certs/server-key.pem');
+const cert = fs.readFileSync(__dirname + '/certs/server-cert.pem');
+//const host = 'hlf-gtw.local'
+const host = 'localhost'
+const port = 443
+const options = {
+	key,
+	cert,
+	host,
+	port,
+	requestCert: true,
+	rejectUnauthorized: false,
+	ca: [fs.readFileSync(__dirname + '/certs/client-cert.pem')]
+}
+const server = https.createServer(options, app)
+
+// Launch server
+server.listen(port, host, () => {
+	console.log("REST server listening at https://%s:%s", host, port)
+})
+
+// Connect to db
+const db = require("./models");
+
+db.mongoose
+.connect(`mongodb://${db.config.HOST}:${db.config.PORT}/${db.config.DB}`, {
+	useNewUrlParser: true,
+	useUnifiedTopology: true
+})
+.then(() => {
+	console.log("Successfully connect to MongoDB.");
+	// todo delete add test user
+	db.user.estimatedDocumentCount((e, count) => {
+		if (!e && count === 0) {
+			new db.user(
+			{username: 'admin', email: 'admin@com', password: 'admin'}
+			).save(e => {
+				if (e) {
+					console.log("error", e);
+					process.exit()
+				} else {
+					console.log("added 'user' to roles collection");
+				}
+			})
+		}
+	})
+})
+.catch(err => {
+	console.error("Connection error", err);
+	process.exit();
+});
+\end{lstlisting}
+
+\textbf{tools.js}
+\begin{lstlisting}[language=JavaScript]
+const fs = require('fs')
+const yaml = require('js-yaml')
+const {Gateway, FileSystemWallet} = require('fabric-network')
+const path = require('path')
+const ejs = require('ejs')
+
+module.exports = {
+	setupGateway: async function (walletPath, profilePath, userId) {
+		let connectionProfile = yaml.load(fs.readFileSync(profilePath, 'utf8'));
+		const wallet = new FileSystemWallet(walletPath)
+		
+		let connectionOptions = {
+			identity: userId,
+			wallet: wallet,
+			discovery: {enabled: false, asLocalhost: true}
+			/*** Uncomment lines below to disable commit listener on submit ****/
+			// , eventHandlerOptions: {
+				//     strategy: null
+				// }
+		}
+		let gateway = new Gateway();
+		await gateway.connect(connectionProfile, connectionOptions)
+		return gateway
+	},
+	configureTemplates: function () {
+		const templatesDir = path.resolve(__dirname, './config/templates')
+		const templates = {}
+		fs.readdir(templatesDir, (err, files) => {
+			if (err) {
+				return console.log('Unable to scan directory: ' + err);
+			}
+			files.forEach(file => {
+				const postfixIndex = file.indexOf('.txt')
+				if (file.startsWith('_doc_type_') && postfixIndex !== -1) {
+					const fileContent = fs.readFileSync(path.resolve(templatesDir, file), 'utf-8').toString()
+					templates[file.substring('_doc_type_'.length, postfixIndex)] = ejs.compile(fileContent, {rmWhitespace: true})
+				}
+			});
+			console.log("Templates parsed: " + Object.keys(templates))
+		})
+		return templates
+	},
+	configureForms: function () {
+		const formsDir = path.resolve(__dirname, './config/forms')
+		const docTypes = {}
+		fs.readdir(formsDir, (err, files) => {
+			if (err) {
+				return console.log('Unable to scan directory: ' + err);
+			}
+			files.forEach(file => {
+				const postfixIndex = file.indexOf('.json')
+				if (file.startsWith('_doc_type_') && postfixIndex !== -1) {
+					const fileContent = fs.readFileSync(path.resolve(formsDir, file), 'utf-8').toString()
+					docTypes[file.substring('_doc_type_'.length, postfixIndex)] = JSON.parse(fileContent)
+				}
+			});
+			// substitute doc types
+			let docTypesArr = Object.keys(docTypes)
+			docTypesArr.forEach(type => {
+				let docTypesConfigIndex = docTypes[type].findIndex(it => it._id === 'type')
+				if (docTypesConfigIndex !== -1) {
+					docTypes[type][docTypesConfigIndex].list = []
+					for (let i = 0; i < docTypesArr.length; i++) {
+						docTypes[type][docTypesConfigIndex].list.push({
+							index: i, index_text: docTypesArr[i]
+						})
+					}
+				}
+			})
+			console.log("Doc types parsed: " + Object.keys(docTypes))
+		})
+		return docTypes
+	}
+}
+\end{lstlisting}
+
+\textbf{routes/auth.routes.js}
+\begin{lstlisting}[language=JavaScript]
+const { verifySignUp } = require("../middlewares");
+const controller = require("../controllers/auth.controller");
+
+module.exports = function (app) {
+	app.use(function(req, res, next) {
+		res.header(
+		"Access-Control-Allow-Headers",
+		"x-access-token, Origin, Content-Type, Accept"
+		);
+		next();
+	});
+	app.post(
+	"/api/auth/signUp",
+	[
+	verifySignUp.checkDuplicateEmail
+	],
+	controller.signUp
+	);
+	
+	app.post("/api/auth/signIn", controller.signIn);
+	
+}
+\end{lstlisting}
+
+\textbf{routes/user.routes.js}
+\begin{lstlisting}[language=JavaScript]
+const {chaincode, authJwt} = require("../middlewares")
+const userController = require("../controllers/user.controller")
+
+module.exports = function (app) {
+	app.post('/api/service/getFormConfig',
+	[
+	authJwt.verifyToken
+	],
+	userController.getFormConfig)
+	
+	app.post('/api/chaincode/newDoc',
+	[
+	authJwt.verifyToken,
+	chaincode.connectToHLF
+	],
+	userController.newDocument)
+	
+	app.post('/api/chaincode/getDocs',
+	[
+	authJwt.verifyToken,
+	chaincode.connectToHLF
+	],
+	userController.getDocuments)
+	
+	app.post('/api/chaincode/changeDoc',
+	[
+	authJwt.verifyToken,
+	chaincode.connectToHLF
+	],
+	userController.changeDocument)
+}
+\end{lstlisting}
+
+\textbf{models/index.js}
+\begin{lstlisting}[language=JavaScript]
+const mongoose = require('mongoose');
+mongoose.Promise = global.Promise;
+
+const db = {};
+
+db.mongoose = mongoose;
+
+db.user = require("./user.model");
+db.config = require("../config/db.config")
+
+module.exports = db;	
+\end{lstlisting}
+
+\textbf{models/user.model.js}
+\begin{lstlisting}[language=JavaScript]
+const mongoose = require("mongoose");
+
+const User = mongoose.model(
+"User",
+new mongoose.Schema({
+	// С.А. Кантор
+	member: String,
+	// Administration
+	group: String,
+	avatar: String,
+	// using during auth
+	email: String,
+	password: String
+})
+);
+
+module.exports = User;	
+\end{lstlisting}
+
+\textbf{controllers/index.js}
+\begin{lstlisting}[language=JavaScript]
+const user = require("./user.controller")
+module.exports = {
+	user
+}	
+\end{lstlisting}
+
+\textbf{controllers/auth.controller.js}
+\begin{lstlisting}[language=JavaScript]
+const config = require("../config/auth.config");
+const db = require("../models");
+const User = db.user;
+
+const jwt = require("jsonwebtoken");
+const bcrypt = require("bcryptjs");
+
+module.exports = {
+	signUp: (req, res) => {
+		// todo add member, group
+		const user = new User({
+			email: req.body.email,
+			password: bcrypt.hashSync(req.body.password, 8)
+		});
+		user.save((err, user) => {
+			if (err) {
+				res.logAndSendError(err, 'Error saving user data.')
+				return
+			}
+			res.logAndSendOk()
+		});
+	},
+	signIn: (request, response, next) => {
+		User.findOne({
+			email: request.body.email
+		}).exec((err, user) => {
+			if (err) {
+				next(err)
+			} else if (!user) {
+				return response.logAndSendError(403, 'UserNotFound', 'A user with the email provided doesn\'t exist.')
+			} else {
+				const passwordIsValid = bcrypt.compareSync(
+				request.body.password,
+				user.password
+				)
+				if (!passwordIsValid) {
+					return response.logAndSendError(403, 'ClientUnauthorized', 'Password provided is not valid.')
+				}
+				const token = jwt.sign({id: user.id, member: user.member, email: user.email, group: user.group}, config.secret, {
+					expiresIn: 86400 // 24 hours
+				});
+				
+				return response.logAndSendOk({
+					member: user.member,
+					email: user.email,
+					accessToken: token,
+					avatar: user.avatar
+				})
+			}
+		})
+		
+	}
+}	
+\end{lstlisting}
+
+\textbf{controllers/user.controller.js}
+\begin{lstlisting}[language=JavaScript]
+const fs = require("fs")
+const path = require('path')
+
+const db = require("../models")
+const User = db.user
+
+function parseHLFError(e) {
+	const msg = e.message
+	let indexOfError = msg.indexOf('Error: ');
+	// from 'Error: ' to '.' (dot)
+	return msg.substring(indexOfError, msg.indexOf('.'))
+}
+
+module.exports = {
+	getFormConfig: async function (request, response) {
+		const docTypes = request.app.get('DOC_TYPES')
+		const formConfig = docTypes[request.body.documentType || 'General']
+		if (formConfig === undefined) {
+			return response.logAndSendError('NoSuchForm', 'There is no form config for doc type ' + request.body.documentType + '.')
+		}
+		User.find({group: request.group, member: {$ne: request.member}}).exec((err, users) => {
+			if (err) {
+				return response.logAndSendError('UnexpectedError', 'Unexpected error, see middleware logs for details.')
+			} else if (!(Array.isArray(users) && users.length)) {
+				return response.logAndSendError('NoUsersInGroup', 'There are no any users in group ' + request.group + '.')
+			} else {
+				// substitute signs
+				let docSignsConfigIndex = formConfig.findIndex(it => it._id === 'signs')
+				if (docSignsConfigIndex !== -1) {
+					formConfig[docSignsConfigIndex].list = []
+					for (let i = 0; i < users.length; i++) {
+						formConfig[docSignsConfigIndex].list.push({
+							index: i, index_text: users[i].member
+						})
+					}
+				}
+				return response.logAndSendOk({config: formConfig})
+			}
+		})
+	},
+	newDocument: async function (request, response) {
+		try {
+			let gateway = await Promise.resolve(request.gateway)
+			let network = await gateway.getNetwork(request.app.get('NETWORK_NAME'))
+			let contract = await network.getContract(request.app.get('CONTRACT_ID'));
+			let {body} = request
+			let responseHLF = await contract.submitTransaction('new-doc',
+			body.title, body.type || "Unknown", body.owner, body.group, JSON.stringify(body.attributes),
+			JSON.stringify(body.signsRequired))
+			response.logAndSendOk(JSON.parse(responseHLF))
+		} catch (e) {
+			return response.logAndSendError("HLFError", e.message)
+		}
+	},
+	getDocuments: async function (request, response) {
+		let responseHLF, body
+		try {
+			let gateway = await Promise.resolve(request.gateway)
+			let network = await gateway.getNetwork(request.app.get('NETWORK_NAME'))
+			let contract = await network.getContract(request.app.get('CONTRACT_ID'));
+			body = request.body
+			responseHLF = await contract.evaluateTransaction('get-docs', body.group)
+		} catch (e) {
+			return response.logAndSendError("HLFError", parseHLFError(e.message))
+		}
+		let docsResponse = JSON.parse(responseHLF)
+		if (body.withContent === true) {
+			const templates = request.app.get('TEMPLATES')
+			for (let i = 0; i < docsResponse.payload.documents.length; i++) {
+				const parse = templates[docsResponse.payload.documents[i].type]
+				docsResponse.payload.documents[i].attributes.content = parse
+				? parse(docsResponse.payload.documents[i].attributes) : null
+			}
+		}
+		response.logAndSendOk(docsResponse)
+		
+		
+	},
+	changeDocument: async function (request, response) {
+		try {
+			let gateway = await Promise.resolve(request.gateway)
+			let network = await gateway.getNetwork(request.app.get('NETWORK_NAME'))
+			let contract = await network.getContract(request.app.get('CONTRACT_ID'));
+			let {body} = request
+			let responseHLF = await contract.submitTransaction('change-doc',
+			body.documentId, body.member, body.type, body.details || "", body.attributes ? JSON.stringify(body.attributes) : "")
+			response.logAndSendOk(JSON.parse(responseHLF))
+		} catch (e) {
+			return response.logAndSendError("HLFError", e.message)
+		}
+	},
+}	
+\end{lstlisting}
+
+\textbf{middlewares/index.js}
+\begin{lstlisting}[language=JavaScript]
+const authJwt = require("./authJwt")
+const chaincode = require("./chaincode")
+const common = require("./common")
+const verifySignUp = require("./verifySignUp")
+
+module.exports = {
+	authJwt,
+	chaincode,
+	common,
+	verifySignUp,
+}	
+\end{lstlisting}
+
+\textbf{middlewares/common.js}
+\begin{lstlisting}[language=JavaScript]
+const richConsole = require('rich-console')
+const stringify = require('json-stringify-safe');
+module.exports = {
+	configure: async function (request, response, next) {
+		response.logAndSend = (status, data) => {
+			// log
+			const resp = data.payload ? data : {payload: data, code: status === 200 ? 'Ok' : 'Nok'}
+			let msg = `\tEndpoint: ${request.path}\n\tRequest: ${stringify(request.body)}\n\tResponse (Code:${status}): ${stringify(resp)}\n`
+			let richMsg = status === 200 ? '<green>' + msg + '</green>>' : '<red>' + msg + '</red>>'
+			richConsole.log(richMsg)
+			// send
+			response.status(status).send(resp)
+		};
+		response.logAndSendOk = (data) => {
+			response.logAndSend(200, data ? data : {result: 'Ok'})
+		}
+		const logAndSendErrorCustom = (status, error, details) => {
+			response.logAndSend(status, {error, details})
+		}
+		const logAndSendError500 = (error, details) => {
+			response.logAndSend(500, {error, details})
+		}
+		response.logAndSendError = (... args) => {
+			if (args.length === 2) {
+				logAndSendError500(args[0], args[1])
+			} else if (arguments.length === 3) {
+				logAndSendErrorCustom(args[0], args[1], args[2])
+			}
+		}
+		next()
+	},
+	verifyCert: async function (request, response, next) {
+		if (request.socket.authorized) {
+			next()
+		} else {
+			// certificate incorrect
+		 	return response.logAndSendError(403, 'ClientUnauthorized', 'Client app certificate is not valid.')
+		}
+	},
+	// triggered by errors in async only in express 5, if use below should get wrapper with try { await willThrow() } catch (e) { next(e) }
+	errorHandler: async function (e, request, response) {
+		console.log("Error occurred: " + e.stack)
+		response.logAndSendError('UnexpectedError', 'See server logs for details.')
+	}
+}	
+\end{lstlisting}
+
+\textbf{middlewares/chaincode.js}
+\begin{lstlisting}[language=JavaScript]
+const {setupGateway} = require("../tools");
+const db = require("../models");
+const User = db.user;
+module.exports = {
+	connectToHLF: function (request, response, next) {
+		User.findById(request.userId).exec((err, user) => {
+			if (err) {
+				response.logAndSendError(err, 'User not found.')
+				return
+			}
+			let profilePath = request.app.get('CONNECTION_PROFILE_PATH')
+			let walletPath = request.app.get('FILESYSTEM_WALLET_PATH')
+			/* todo connection depends on user, already here*/
+			console.log("User Identity : " + user.username + user.email)
+			request.gateway = setupGateway(walletPath, profilePath, request.userId)
+			next()
+		})
+	}
+}	
+\end{lstlisting}
+
+\textbf{middlewares/authJwt.js}
+\begin{lstlisting}[language=JavaScript]
+const jwt = require("jsonwebtoken");
+const config = require("../config/auth.config.js");
+
+module.exports = {
+	verifyToken: (req, res, next) => {
+		let token = req.headers["x-access-token"];
+		
+		if (!token) {
+			return res.logAndSendError(403, 'NoTokenProvided', 'Header \'x-access-token\' is not specified.')
+		}
+		
+		jwt.verify(token, config.secret, (err, decoded) => {
+			if (err) {
+				return res.logAndSendError(401, 'UserUnauthorized', 'Invalid token received.')
+			}
+			req.userId = decoded.id
+			req.group = decoded.group
+			req.member = decoded.member
+			req.email = decoded.email
+			next();
+		});
+	}
+}	
+\end{lstlisting}
+
+\textbf{middlewares/verifySignUp.js}
+\begin{lstlisting}[language=JavaScript]
+const db = require("../models");
+const User = db.user;
+
+module.exports = {
+	checkDuplicateEmail: (req, res, next) => {
+		// Email
+		User.findOne({
+			email: req.body.email
+		}).exec((err, user) => {
+			if (err) {
+				return res.logAndSendError(err, 'Mongo exception.')
+			}
+			
+			if (user) {
+				return res.logAndSendError(400, 'EmailAlreadyInUse', 'There is an existing user with email specified.')
+			}
+			next();
+		});
+	}
+}	
+\end{lstlisting}
 \section{Исходный код смарт контрактов}\label{app:B2}
 
-\section{Исходный код мобильного приложения}\label{app:B3}
+\textbf{chaincode.go}
+\begin{lstlisting}[language=Go]
+package main
 
+import (
+"encoding/json"
+"fmt"
+"github.com/hyperledger/fabric-chaincode-go/shim"
+"github.com/hyperledger/fabric-protos-go/peer"
+"strings"
+)
+
+type DocsChaincode struct {
+}
+
+func (token *DocsChaincode) Init(stub shim.ChaincodeStubInterface) peer.Response {
+	fmt.Println("Init executed")
+	return successResponse("Initializing successful.")
+}
+
+func (token *DocsChaincode) Invoke(stub shim.ChaincodeStubInterface) peer.Response {
+	function, args := stub.GetFunctionAndParameters()
+	
+	fmt.Println("Invoke executed : ", function, ", args=", strings.Join(args, ","))
+	
+	return NewFunction(function, args, stub).Execute()
+}
+
+\end{lstlisting}
+
+\textbf{document.go}
+\begin{lstlisting}[language=Go]
+package main
+
+import (
+"encoding/json"
+"errors"
+"github.com/google/uuid"
+"time"
+)
+
+const (
+// doc.status
+Processing    = "PROCESSING"
+Approved      = "APPROVED"
+Closed        = "CLOSED"
+Rejected      = "REJECTED"
+InitialStatus = Processing
+// change.type
+Reject  = "REJECT"
+Edit    = "EDIT"
+Approve = "APPROVE"
+// doc.type
+TypeGraduatedExpelling     = "GraduatedExpelling"
+TypePracticePermission     = "PracticePermission"
+TypeGraduationThesisTopics = "GraduationThesisTopics"
+TypeGeneral                = "General"
+)
+
+type Change struct {
+	// Dean
+	Member string `json:"member"`
+	// REJECT
+	Type string `json:"type"`
+	// 21.05.2021
+	Date time.Time `json:"date"`
+	// Отсутствует студент Иванов И.И.
+	Details    string         `json:"details"`
+	Attributes IDocAttributes `json:"attributes"`
+}
+
+type Document struct {
+	Id    string `json:"documentId"`
+	Title string `json:"title"`
+	// User identity
+	Owner string `json:"owner"`
+	// группа: администрация, сервис
+	Group string `json:"group"`
+	// GraduatedExpelling - Представление-<группа(ы)>-отчисление
+	// PracticePermission - Приказ о допуске на практику студентов
+	// GraduationThesisTopics - Приказ о темах выпускных квалификационных работ
+	// Unknown - неизвестный тип
+	Type string `json:"type"`
+	// кастомные элементы структуры текста
+	Attributes IDocAttributes `json:"attributes"`
+	// Дата создания
+	Date time.Time `json:"date"`
+	// PROCESSING - на рассмотрении (не подписан и не отклонен)
+	// APPROVED - подписан всеми участниками, финальный статус
+	// REJECTED - отклонен участником с комментарием
+	// ABORTED - отмененный
+	Status string `json:"status"`
+	// История изменений по типу:
+	/*
+	[
+	{
+		"member": "Dean",
+		"type": "REJECT",
+		"date": "21.05.2021",
+		"details": "Отсутствует студент Иванов И.И."
+	},
+	{
+		"member": "Owner",
+		"type": "EDIT",
+		"date": "22.05.2021",
+		"details": "Добавлен студент Иванов И.И."
+	},
+	{
+		"member": "Dean",
+		"type": "APPROVE",
+		"date": "23.05.2021",
+		"details": null
+	}
+	]
+	*/
+	Changes []Change `json:"changes"`
+	// Список участников чьи подписи требуются в порядке указанном в списке
+	SignsRequired []string `json:"signsRequired"`
+	// Список участников чьи подписи уже поставлены (кем одобрен документ)
+	SignedBy []string `json:"signedBy"`
+}
+
+func NewChange(member string, _type string, details string, attrs IDocAttributes) Change {
+	return Change{
+		Member:     member,
+		Type:       _type,
+		Date:       time.Now(),
+		Details:    details,
+		Attributes: attrs,
+	}
+}
+
+func DocumentFromJson(docJson []byte) (Document, error) {
+	var output Document
+	_ = json.Unmarshal(docJson, &output)
+	tree := ParseJson(docJson)
+	attrsJson := tree.Get("attributes").String()
+	attrs, e := AttributesFromJson(output.Type, attrsJson)
+	if e != nil {
+		return Document{}, e
+	}
+	output.Attributes = attrs
+	return output, nil
+}
+
+func NewDocument(title string, _type string, owner string, group string, attrJson string, signs []string) (Document, error) {
+	attrs, e := AttributesFromJson(_type, attrJson)
+	if e != nil {
+		return Document{}, e
+	}
+	return Document{
+		Id:            uuid.NewString(),
+		Title:         title,
+		Type:          _type,
+		Owner:         owner,
+		Group:         group,
+		Date:          time.Now(),
+		Attributes:    attrs,
+		Status:        InitialStatus,
+		SignsRequired: signs,
+		SignedBy:      make([]string, 0),
+		Changes:       make([]Change, 0),
+	}, nil
+}
+
+func (d *Document) IsSigned() bool {
+	for _, signRequired := range d.SignsRequired {
+		if !contains(d.SignedBy, signRequired) {
+			// no sign required
+			return false
+		}
+	}
+	// document is signed
+	d.Status = Approved
+	return true
+}
+
+func (d *Document) RegisterChange(change Change) error {
+	switch change.Type {
+		case Approve:
+		if !contains(d.SignsRequired, change.Member) {
+			marshalledSigns, _ := json.Marshal(d.SignsRequired)
+			return errors.New("Sign " + change.Member + " is not applicable to the doc, only " + string(marshalledSigns) + " are")
+		}
+		if sign, err := d.getCurrentSign(); err != nil {
+			return err
+		} else {
+			if sign != change.Member {
+				return errors.New("Out of queue, current sign should be " + sign)
+			}
+			d.SignedBy = append(d.SignedBy, change.Member)
+			d.Changes = append(d.Changes, change)
+		}
+		case Reject:
+		if !contains(d.SignsRequired, change.Member) {
+			marshalledSigns, _ := json.Marshal(d.SignsRequired)
+			return errors.New("Reject " + change.Member + " is not applicable to the doc, only " + string(marshalledSigns) + " are")
+		}
+		if sign, err := d.getCurrentSign(); err != nil {
+			return err
+		} else {
+			if sign != change.Member {
+				return errors.New("Out of queue, current sign should be " + sign)
+			}
+			d.Status = Rejected
+			d.Changes = append(d.Changes, change)
+		}
+		case Edit:
+		if change.Attributes != nil {
+			// swap attributes
+			//var attrsTemp IDocAttributes
+			//attrsTemp = d.Attributes
+			d.Attributes, change.Attributes = change.Attributes, d.Attributes
+			//change.Attributes = &attrsTemp
+			// add change with previous doc attrs state
+			d.Changes = append(d.Changes, change)
+		}
+		d.Status = Processing
+	}
+	return nil
+}
+
+func (d *Document) getCurrentSign() (string, error) {
+	if d.Status == Approved {
+		return "", errors.New("already signed")
+	}
+	if len(d.SignedBy) == 0 {
+		return d.SignsRequired[0], nil
+	}
+	lastSigned := d.SignedBy[len(d.SignedBy)-1]
+	// next sign required
+	if lastSigned != d.SignsRequired[len(d.SignsRequired)-1] {
+		for i := 0; i < len(d.SignsRequired)-1; i++ {
+			if d.SignsRequired[i] == lastSigned {
+				return d.SignsRequired[i+1], nil
+			}
+		}
+	}
+	// last sign remained
+	return d.SignsRequired[len(d.SignsRequired)-1], nil
+	
+}
+
+\end{lstlisting}
+
+\textbf{attributes.go}
+
+\begin{lstlisting}[language=Go]
+package main
+
+import "encoding/json"
+
+const (
+FullTime  = "FULL_TIME"  // очный
+PartTime  = "PART_TIME"  // очно-заочный
+SelfStudy = "SELF_STUDY" // заочный
+)
+
+type IDocAttributes interface {
+	// Текст документа
+	GenerateContent()
+}
+
+// ===== General ====
+type DocAttributes struct {
+	// Текст документа
+	Content string `json:"content"`
+}
+
+func (attrs *DocAttributes) GenerateContent() {}
+
+// ===== GraduationThesisTopics ====
+
+type GraduationThesisTopicsAttributes struct {
+	Content    string                          `json:"content"`
+	Group      string                          `json:"group"`
+	Speciality string                          `json:"speciality"`
+	StudyType  string                          `json:"studyType"`
+	Students   []GraduationThesisTopicsStudent `json:"students"`
+}
+
+func (attrs *GraduationThesisTopicsAttributes) GenerateContent() {}
+
+// ===== GraduatedExpelling ====
+
+type GraduatedExpellingAttributes struct {
+	Content       string                      `json:"content"`
+	Course        *int                        `json:"course"`
+	Speciality    string                      `json:"speciality"`
+	Faculty       string                      `json:"faculty"`
+	StudyType     string                      `json:"studyType"`
+	Qualification string                      `json:"qualification"`
+	Students      []GraduatedExpellingStudent `json:"students"`
+}
+
+func (attrs *GraduatedExpellingAttributes) GenerateContent() {}
+
+// ===== PracticePermission ====
+
+type PracticePermissionAttributes struct {
+	Content      string                      `json:"content"`
+	PracticeType string                      `json:"practiceType"`
+	Course       *int                        `json:"course"`
+	Speciality   string                      `json:"speciality"`
+	StudyType    string                      `json:"studyType"`
+	DateFrom     string                      `json:"dateFrom"`
+	DateTo       string                      `json:"dateTo"`
+	Students     []PracticePermissionStudent `json:"students"`
+}
+
+func (attrs *PracticePermissionAttributes) GenerateContent() {}
+
+func AttributesFromJson(_type string, attrsJson string) (IDocAttributes, error) {
+	switch _type {
+		case TypeGraduationThesisTopics:
+		var attrs GraduationThesisTopicsAttributes
+		e := json.Unmarshal([]byte(attrsJson), &attrs)
+		attrs.GenerateContent()
+		return &attrs, e
+		case TypeGraduatedExpelling:
+		var attrs GraduatedExpellingAttributes
+		e := json.Unmarshal([]byte(attrsJson), &attrs)
+		attrs.GenerateContent()
+		return &attrs, e
+		case TypePracticePermission:
+		var attrs PracticePermissionAttributes
+		e := json.Unmarshal([]byte(attrsJson), &attrs)
+		attrs.GenerateContent()
+		return &attrs, e
+		default:
+		var attrs DocAttributes
+		e := json.Unmarshal([]byte(attrsJson), &attrs)
+		return &attrs, e
+	}
+}	
+\end{lstlisting}
+
+\textbf{chaincode-function.go}
+\begin{lstlisting}[language=Go]
+package main
+
+import (
+"fmt"
+"github.com/hyperledger/fabric-chaincode-go/shim"
+"github.com/hyperledger/fabric-protos-go/ledger/queryresult"
+"github.com/hyperledger/fabric-protos-go/peer"
+)
+
+const (
+// function names for dispatching
+NewDoc    = "new-doc"
+ChangeDoc = "change-doc"
+GetDocs   = "get-docs"
+)
+
+type IChaincodeFunction interface {
+	BindParams([]string)
+	Execute() peer.Response
+}
+
+type ChaincodeFunction struct {
+	stub shim.ChaincodeStubInterface
+	name string
+}
+
+func (f *ChaincodeFunction) BindParams([]string) {
+	// default: no params
+}
+
+func (f *ChaincodeFunction) Execute() peer.Response {
+	// default: error! unimplemented func
+	return errorResponse("Invalid function: "+f.name, 1)
+}
+
+func NewFunction(name string, args []string, stub shim.ChaincodeStubInterface) IChaincodeFunction {
+	defaultFunction := ChaincodeFunction{name: name, stub: stub}
+	var output IChaincodeFunction
+	switch name {
+		case NewDoc:
+		output = &CreateNewDocumentFunction{ChaincodeFunction: defaultFunction}
+		case ChangeDoc:
+		output = &ChangeDocumentFunction{ChaincodeFunction: defaultFunction}
+		case GetDocs:
+		output = &GetDocumentsFunction{ChaincodeFunction: defaultFunction}
+		default:
+		output = &defaultFunction
+	}
+	output.BindParams(args)
+	return output
+	
+}
+func (f *ChaincodeFunction) ExecuteRichQuery(query string) [][]byte {
+	fmt.Printf("Query JSON=%s \n\n", query)
+	iterator, err := f.stub.GetQueryResult(query)
+	// return empty map in case of any errors
+	if err != nil {
+		fmt.Println("Error occurred during executing query =" + err.Error())
+		return make([][]byte, 0)
+	}
+	var output [][]byte
+	for iterator.HasNext() {
+		var resultKV *queryresult.KV
+		var err error
+		resultKV, err = iterator.Next()
+		if err != nil {
+			fmt.Println("Error occurred during parsing value =" + err.Error())
+			return make([][]byte, 0)
+		}
+		output = append(output, resultKV.GetValue())
+	}
+	_ = iterator.Close()
+	return output
+}
+
+\end{lstlisting}
+\textbf{change-doc.go}
+
+\begin{lstlisting}[language=Go]
+package main
+
+import (
+"encoding/json"
+"github.com/hyperledger/fabric-protos-go/peer"
+)
+
+type ChangeDocumentFunction struct {
+	ChaincodeFunction
+	Id             string
+	Member         string
+	Type           string
+	Details        string
+	AttributesJson string
+}
+type SignDocumentResponse struct {
+	IsSigned bool `json:"isSigned"`
+}
+
+func (f *ChangeDocumentFunction) BindParams(args []string) {
+	f.Id = args[0]
+	f.Member = args[1]
+	f.Type = args[2]
+	f.Details = args[3]
+	if len(args) > 4 {
+		f.AttributesJson = args[4]
+	} else {
+		f.AttributesJson = ""
+	}
+}
+
+func (f *ChangeDocumentFunction) Execute() peer.Response {
+	documentKey := "doc" + f.Id
+	documentJson, _ := f.stub.GetState(documentKey)
+	document, _ := DocumentFromJson(documentJson)
+	var attrs IDocAttributes
+	if f.AttributesJson != "" {
+		var e error
+		if attrs, e = AttributesFromJson(document.Type, f.AttributesJson); e != nil {
+			return errorResponse(e.Error(), 2)
+		}
+	} else {
+		attrs = nil
+	}
+	// register change
+	change := NewChange(f.Member, f.Type, f.Details, attrs)
+	if err := document.RegisterChange(change); err != nil {
+		return errorResponse(err.Error(), 2)
+	}
+	// check for final status
+	isSigned := document.IsSigned()
+	// update document in blockchain
+	marshalledDocument, _ := json.Marshal(document)
+	_ = f.stub.PutState(documentKey, marshalledDocument)
+	// return actual status
+	response := SignDocumentResponse{isSigned}
+	marshalledResponse, _ := json.Marshal(response)
+	return successResponse(string(marshalledResponse))
+}
+
+\end{lstlisting}
+\textbf{get-docs.go}
+
+\begin{lstlisting}[language=Go]
+package main
+
+import (
+"encoding/json"
+"fmt"
+"github.com/hyperledger/fabric-protos-go/peer"
+)
+
+const query = `{
+	"selector": {
+		"group": "%s"
+	}
+}`
+
+type GetDocumentsFunction struct {
+	ChaincodeFunction
+	Group string
+}
+
+type GetDocumentsResponse struct {
+	Documents []Document `json:"documents"`
+}
+
+func (f *GetDocumentsFunction) BindParams(args []string) {
+	f.Group = args[0]
+}
+
+func (f *GetDocumentsFunction) Execute() peer.Response {
+	query := fmt.Sprintf(query, f.Group)
+	documents := f.ExecuteRichQuery(query)
+	response := GetDocumentsResponse{make([]Document, len(documents))}
+	for i, document := range documents {
+		response.Documents[i], _ = DocumentFromJson(document)
+	}
+	marshalledResponse, _ := json.Marshal(response)
+	return successResponse(string(marshalledResponse))
+}
+
+\end{lstlisting}
+
+\textbf{main.go}
+\begin{lstlisting}[language=Go]
+package main
+
+import (
+"fmt"
+"github.com/hyperledger/fabric-chaincode-go/shim"
+)
+
+func main() {
+	fmt.Println("Starting....")
+	err := shim.Start(new(DocsChaincode))
+	if err != nil {
+		fmt.Printf("Error starting chaincode: %s", err)
+	}
+}
+
+\end{lstlisting}
+
+\textbf{new-doc.go}
+\begin{lstlisting}[language=Go]
+package main
+
+import (
+"encoding/json"
+"github.com/hyperledger/fabric-protos-go/peer"
+)
+
+type CreateNewDocumentFunction struct {
+	ChaincodeFunction
+	Title     string
+	Type      string
+	Owner     string
+	Group     string
+	attrsJson string
+	Signs     []string
+}
+
+type CreateNewDocumentResponse struct {
+	DocumentId string `json:"documentId"`
+}
+
+func (f *CreateNewDocumentFunction) BindParams(args []string) {
+	f.Title = args[0]
+	f.Type = args[1]
+	f.Owner = args[2]
+	f.Group = args[3]
+	f.attrsJson = args[4]
+	_ = json.Unmarshal([]byte(args[5]), &f.Signs)
+}
+
+func (f *CreateNewDocumentFunction) Execute() peer.Response {
+	document, e := NewDocument(f.Title, f.Type, f.Owner, f.Group, f.attrsJson, f.Signs)
+	if e != nil {
+		return errorResponse(e.Error(), 3)
+	}
+	marshalledDocument, _ := json.Marshal(document)
+	_ = f.stub.PutState("doc"+document.Id, marshalledDocument)
+	response := CreateNewDocumentResponse{
+		DocumentId: document.Id,
+	}
+	marshalledResponse, _ := json.Marshal(response)
+	return successResponse(string(marshalledResponse))
+}
+
+\end{lstlisting}
+
+\textbf{students.go}
+\begin{lstlisting}[language=Go]
+package main
+
+type Student struct {
+	// all string should be substitute to pointers?
+	FullName        string `json:"fullName"`
+	Nationality     string `json:"nationality"`
+	Group           string `json:"group"`
+	OnGovernmentPay *bool  `json:"onGovernmentPay"` // основа обучения бюджет=true\внебюджет=false
+}
+
+type GraduatedExpellingStudent struct {
+	CommonInfo       Student `json:"commonInfo"`
+	HasHonoursDegree *bool   `json:"hasHonoursDegree"`
+	ExamDate         string  `json:"examDate"`
+}
+
+type GraduationThesisTopicsStudent struct {
+	CommonInfo              Student `json:"commonInfo"`
+	Topic                   string  `json:"topic"`
+	AcademicAdvisorFullName string  `json:"academicAdvisorFullName"`
+}
+
+type PracticePermissionStudent struct {
+	CommonInfo       Student `json:"commonInfo"`
+	PracticeLocation string  `json:"practiceLocation"`
+	HeadFullName     string  `json:"headFullName"`
+}
+
+\end{lstlisting}
+
+\textbf{utils.go}
+\begin{lstlisting}[language=Go]
+package main
+
+import (
+"github.com/hyperledger/fabric-chaincode-go/shim"
+"github.com/hyperledger/fabric-protos-go/peer"
+"strconv"
+)
+
+func contains(s []string, e string) bool {
+	for _, a := range s {
+		if a == e {
+			return true
+		}
+	}
+	return false
+}
+
+func errorResponse(err string, code uint) peer.Response {
+	codeStr := strconv.FormatUint(uint64(code), 10)
+	errorString := "{\"error\":" + err + ", \"code\":" + codeStr + " \" }"
+	return shim.Error(errorString)
+}
+
+func successResponse(dat string) peer.Response {
+	success := "{\"payload\": " + dat + ", \"code\": 0 }"
+	return shim.Success([]byte(success))
+}
+
+\end{lstlisting}
+\section{Исходный код мобильного приложения}\label{app:B3}
+\textbf{AuthActivity.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.auth;
+
+import android.app.Activity;
+import android.content.Intent;
+import android.os.Bundle;
+import android.text.Editable;
+import android.text.TextWatcher;
+import android.view.View;
+import android.view.inputmethod.EditorInfo;
+import android.widget.*;
+import androidx.annotation.IdRes;
+import androidx.annotation.StringRes;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.lifecycle.ViewModelProvider;
+import com.auth0.android.jwt.JWT;
+import core.activities.R;
+import core.activities.ui.main.MainActivity;
+import core.activities.ui.shared.UserMessageShower;
+import core.sessions.SessionConstants;
+import core.sessions.SessionManager;
+import core.shared.ApplicationContext;
+
+import java.util.Objects;
+
+public abstract class AuthActivity extends AppCompatActivity implements View.OnClickListener, UserMessageShower {
+	
+	private AuthViewModel authViewModel;
+	private @IdRes
+	int layout;
+	public static String MEMBER_AVATAR_STORED_KEY = SessionConstants.SESSION_PREFERENCES_PREFIX + "MEMBER_AVATAR_STORED_KEY";
+	
+	protected final void init(@IdRes int layout) {
+		this.layout = layout;
+	}
+	
+	protected void setupUI() {
+		// activity's controls
+		final EditText passEditText = findViewById(R.id.passEditText);
+		final EditText loginEditText = findViewById(R.id.loginEditText);
+		final Button submitButton = findViewById(R.id.submitAuthButton);
+		final ProgressBar loadingProgressBar = findViewById(R.id.authProgressBar);
+		final ImageView closeImageView = findViewById(R.id.closeImageView);
+		final TextView changeFormTextView = findViewById(R.id.changeFormTextView);
+		// todo for dev purposes, delete later
+		loginEditText.setText("ishimael@bk.ru");
+		passEditText.setText("avdeev11");
+		authViewModel =
+		new ViewModelProvider(this, new AuthViewModelFactory()).get(AuthViewModel.class);
+		authViewModel.getLoginFormState().observe(this, loginFormState -> {
+			if (loginFormState == null) {
+				return;
+			}
+			submitButton.setEnabled(loginFormState.isDataValid());
+			if (loginFormState.getUsernameError() != null) {
+				loginEditText.setError(getString(loginFormState.getUsernameError()));
+			}
+			if (loginFormState.getPasswordError() != null) {
+				passEditText.setError(getString(loginFormState.getPasswordError()));
+			}
+		});
+		
+		authViewModel.getLoginResult().observe(this, loginResult -> {
+			if (loginResult == null) {
+				return;
+			}
+			loadingProgressBar.setVisibility(View.GONE);
+			if (loginResult.getError() != null) {
+				showLoginFailed(loginResult.getError());
+			} else if (loginResult.getSuccess() != null) {
+				updateUiWithUser(loginResult.getSuccess());
+				final JWT jwt = loginResult.getSuccess().getJwt();
+				SessionManager.getInstance().startUserSession(ApplicationContext.get(), jwt);
+				SessionManager.getInstance().store(ApplicationContext.get(), MEMBER_AVATAR_STORED_KEY, loginResult.getSuccess().getAvatar());
+				goToMain(jwt);
+			}
+		});
+		TextWatcher afterTextChangedListener = new TextWatcher() {
+			@Override
+			public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+				// ignore
+			}
+			
+			@Override
+			public void onTextChanged(CharSequence s, int start, int before, int count) {
+				// ignore
+			}
+			
+			@Override
+			public void afterTextChanged(Editable s) {
+				authViewModel.loginDataChanged(loginEditText.getText().toString(),
+				passEditText.getText().toString());
+			}
+		};
+		loginEditText.addTextChangedListener(afterTextChangedListener);
+		passEditText.addTextChangedListener(afterTextChangedListener);
+		
+		passEditText.setOnEditorActionListener((v, actionId, event) -> {
+			if (actionId == EditorInfo.IME_ACTION_DONE) {
+				String login = loginEditText.getText().toString();
+				String pass = passEditText.getText().toString();
+				auth(login, pass);
+			}
+			return false;
+		});
+		// todo set false
+		submitButton.setEnabled(true);
+		submitButton.setOnClickListener(v -> {
+			loadingProgressBar.setVisibility(View.VISIBLE);
+			String login = loginEditText.getText().toString();
+			String pass = passEditText.getText().toString();
+			auth(login, pass);
+		});
+		changeFormTextView.setOnClickListener(this);
+		closeImageView.setOnClickListener(self -> finish());
+	}
+	
+	private void auth(String login, String pass) {
+		if (layout == R.layout.activity_sign_up) {
+			authViewModel.signUp(login, pass);
+		} else if (layout == R.layout.activity_sign_in) {
+			authViewModel.signIn(login, pass);
+		}
+	}
+	
+	private void goToMain(JWT jwt) {
+		setResult(Activity.RESULT_OK);
+		Intent intent = new Intent(this, MainActivity.class);
+		finish();
+		startActivity(intent);
+	}
+	
+	@Override
+	public void onCreate(Bundle savedInstanceState) {
+		// must be the first line in code
+		ApplicationContext.getInstance().init(getApplicationContext());
+		super.onCreate(savedInstanceState);
+		// todo for dev purposes, uncomment for making signing in required all the time as token get cleaned
+		SessionManager.getInstance().endUserSession(ApplicationContext.get());
+		final JWT token = SessionManager.getInstance().getUserToken(getApplicationContext()).orElse(null);
+		if (isSessionActive(token)) {
+			goToMain(token);
+		} else {
+			SessionManager.getInstance().endUserSession(ApplicationContext.get());
+			// setup signIn/signUp UI
+			setContentView(layout);
+			setupUI();
+		}
+	}
+	
+	private boolean isSessionActive(JWT token) {
+		return Objects.nonNull(token) && !token.isExpired(0);
+	}
+	
+	private void updateUiWithUser(LoggedInUserView model) {
+		String welcome = String.format(getString(R.string.welcome), model.getDisplayName());
+		showUserMessage(welcome);
+	}
+	
+	private void showLoginFailed(@StringRes Integer errorRes) {
+		showUserMessage(errorRes);
+	}
+}	
+
+\end{lstlisting}
+
+\textbf{AuthViewModel.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.auth;
+
+import android.util.Patterns;
+import androidx.lifecycle.MutableLiveData;
+import androidx.lifecycle.ViewModel;
+import core.activities.R;
+import core.activities.data.AuthRepository;
+import core.activities.data.Result;
+import core.activities.data.model.LoggedInUser;
+import core.activities.ui.shared.Async;
+import lombok.AccessLevel;
+import lombok.Getter;
+import lombok.experimental.FieldDefaults;
+
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.function.Supplier;
+
+@FieldDefaults(makeFinal = true, level = AccessLevel.PRIVATE)
+public class AuthViewModel extends ViewModel {
+	@Getter
+	MutableLiveData<LoginFormState> loginFormState = new MutableLiveData<>();
+	@Getter
+	MutableLiveData<LoginResult> loginResult = new MutableLiveData<>();
+	AuthRepository authRepository;
+	
+	AuthViewModel(AuthRepository authRepository) {
+		this.authRepository = authRepository;
+	}
+	
+	private void auth(Supplier<Result> auth) {
+		Async.execute(() -> {
+			Result result = auth.get();
+			LoginResult lr;
+			if (result instanceof Result.Success) {
+				LoggedInUser data = ((Result.Success) result).getUser();
+				lr = new LoginResult(new LoggedInUserView(data.getData().getMember(), data.getJwt(), data.getData().getAvatar()));
+			} else {
+				lr = new LoginResult(R.string.login_failed);
+			}
+			loginResult.postValue(lr);
+		});
+	}
+	
+	public void signIn(String username, String password) {
+		auth(() -> authRepository.signIn(username, password));
+	}
+	
+	public void signUp(String username, String password) {
+		auth(() -> authRepository.signUp(username, password));
+	}
+	
+	public void loginDataChanged(String username, String password) {
+		if (!isUserNameValid(username)) {
+			loginFormState.setValue(new LoginFormState(R.string.invalid_username, null));
+		} else if (!isPasswordValid(password)) {
+			loginFormState.setValue(new LoginFormState(null, R.string.invalid_password));
+		} else {
+			loginFormState.setValue(new LoginFormState(true));
+		}
+	}
+	
+	// A placeholder username validation check
+	private boolean isUserNameValid(String username) {
+		if (username == null) {
+			return false;
+		}
+		if (username.contains("@")) {
+			return Patterns.EMAIL_ADDRESS.matcher(username).matches();
+		} else {
+			return !username.trim().isEmpty();
+		}
+	}
+	
+	// A placeholder password validation check
+	private boolean isPasswordValid(String password) {
+		return password != null && password.trim().length() > 4;
+	}
+}		
+\end{lstlisting}
+
+\textbf{AuthViewModelFactory.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.auth;
+
+import androidx.annotation.NonNull;
+import androidx.lifecycle.ViewModel;
+import androidx.lifecycle.ViewModelProvider;
+import core.activities.data.AuthDataSource;
+import core.activities.data.AuthRepository;
+import lombok.AllArgsConstructor;
+
+/**
+* ViewModel provider factory to instantiate LoginViewModel.
+* Required given LoginViewModel has a non-empty constructor
+*/
+@AllArgsConstructor
+public class AuthViewModelFactory implements ViewModelProvider.Factory {
+	@NonNull
+	@Override
+	@SuppressWarnings("unchecked")
+	public <T extends ViewModel> T create(@NonNull Class<T> modelClass) {
+		if (modelClass.isAssignableFrom(AuthViewModel.class)) {
+			return (T) new AuthViewModel(AuthRepository.getInstance(new AuthDataSource()));
+		} else {
+			throw new IllegalArgumentException("Unknown ViewModel class");
+		}
+	}
+}	
+\end{lstlisting}
+
+\textbf{LoggedInUser.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.auth;
+
+import com.auth0.android.jwt.JWT;
+import lombok.AccessLevel;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.experimental.FieldDefaults;
+
+/**
+* Class exposing authenticated user details to the UI.
+*/
+@Data
+@AllArgsConstructor
+@FieldDefaults(level = AccessLevel.PRIVATE)
+// session object
+class LoggedInUserView {
+	String displayName;
+	JWT jwt;
+	String avatar;
+}	
+\end{lstlisting}
+
+\textbf{LoginFormState.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.auth;
+
+import androidx.annotation.Nullable;
+import lombok.AccessLevel;
+import lombok.Getter;
+import lombok.experimental.FieldDefaults;
+
+/**
+* Data validation state of the login form.
+*/
+@Getter
+@FieldDefaults(makeFinal = true, level = AccessLevel.PRIVATE)
+class LoginFormState {
+	@Nullable
+	Integer usernameError;
+	@Nullable
+	Integer passwordError;
+	boolean isDataValid;
+	
+	LoginFormState(@Nullable Integer usernameError, @Nullable Integer passwordError) {
+		this.usernameError = usernameError;
+		this.passwordError = passwordError;
+		this.isDataValid = false;
+	}
+	
+	LoginFormState(boolean isDataValid) {
+		this.usernameError = null;
+		this.passwordError = null;
+		this.isDataValid = isDataValid;
+	}
+}	
+\end{lstlisting}
+
+\textbf{LoginResult.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.auth;
+
+import androidx.annotation.Nullable;
+import lombok.Getter;
+
+/**
+* Authentication result : success (user details) or error message.
+*/
+@Getter
+class LoginResult {
+	@Nullable
+	private LoggedInUserView success;
+	@Nullable
+	private Integer error;
+	
+	LoginResult(@Nullable Integer error) {
+		this.error = error;
+	}
+	
+	LoginResult(@Nullable LoggedInUserView success) {
+		this.success = success;
+	}
+}	
+\end{lstlisting}
+
+\textbf{SignInActivity.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.auth;
+
+import android.content.Intent;
+import android.view.View;
+import core.activities.R;
+
+public class SignInActivity extends AuthActivity {
+	{
+		init(R.layout.activity_sign_in);
+	}
+	
+	@Override
+	// todo rename to onSwitchFormButtonClick
+	public void onClick(View v) {
+		Intent intent = new Intent(this, SignUpActivity.class);
+		startActivity(intent);
+	}
+}
+	
+\end{lstlisting}
+
+\textbf{SessionManger.java}
+\begin{lstlisting}[language=Java]
+package core.sessions;
+
+import android.content.Context;
+import com.auth0.android.jwt.JWT;
+import core.shared.Traceable;
+import lombok.val;
+
+import java.util.Objects;
+import java.util.Optional;
+
+import static core.sessions.SessionConstants.SESSION_PREFERENCES;
+import static core.sessions.SessionConstants.SESSION_TOKEN;
+
+public class SessionManager implements Traceable {
+	private static SessionManager INSTANCE;
+	
+	private SessionManager() {
+	}
+	
+	public static SessionManager getInstance() {
+		return Objects.nonNull(INSTANCE) ? INSTANCE : (INSTANCE = new SessionManager());
+	}
+	
+	public void startUserSession(Context context, JWT token) {
+		val tokenSharedPreferences = context.getSharedPreferences(SESSION_PREFERENCES, 0);
+		val editor = tokenSharedPreferences.edit();
+		trace("Started user session with token %s, expires at %s", token.toString(), token.getExpiresAt());
+		editor.putString(SESSION_TOKEN, token.toString());
+		editor.apply();
+	}
+	
+	public void store(Context context, String key, String value) {
+		val tokenEditor = context.getSharedPreferences(SESSION_PREFERENCES, 0).edit();
+		tokenEditor.putString(key, value);
+		tokenEditor.apply();
+	}
+	
+	public String get(Context context, String key) {
+		return context.getSharedPreferences(SESSION_PREFERENCES, 0).getString(key, null);
+	}
+	
+	public Optional<JWT> getUserToken(Context context) {
+		final String token = get(context, SESSION_TOKEN);
+		return Optional.ofNullable(token)
+		.map(JWT::new);
+	}
+	
+	public void endUserSession(Context context) {
+		clearStoredData(context);
+	}
+	
+	private void clearStoredData(Context context) {
+		val sharedPreferences = context.getSharedPreferences(SESSION_PREFERENCES, 0);
+		trace("End session with token %s", sharedPreferences.getString(SESSION_TOKEN, null));
+		val editor = sharedPreferences.edit();
+		editor.clear();
+		editor.apply();
+	}
+}	
+\end{lstlisting}
+
+\textbf{ApplicationContext.java}
+\begin{lstlisting}[language=Java]
+package core.shared;
+
+import android.content.Context;
+
+public final class ApplicationContext {
+	
+	private Context appContext;
+	
+	private ApplicationContext() {
+	}
+	
+	public void init(Context context) {
+		if (appContext == null) {
+			appContext = context;
+		}
+	}
+	
+	private Context getContext() {
+		return appContext;
+	}
+	
+	public static Context get() {
+		return getInstance().getContext();
+	}
+	
+	private static ApplicationContext instance;
+	
+	public static ApplicationContext getInstance() {
+		return instance == null ?
+		(instance = new ApplicationContext()) :
+		instance;
+	}
+}
+	
+\end{lstlisting}
+
+\textbf{Traceable.java}
+\begin{lstlisting}[language=Java]
+package core.shared;
+
+import android.util.Log;
+
+import java.util.Objects;
+
+public interface Traceable extends Tagged {
+	default void trace(String message) {
+		trace(message, new Object[]{});
+	}
+	
+	default void trace(String message, Object... args) {
+		if (Objects.isNull(message)) {
+			throw new NullPointerException("Message cannot be null");
+		}
+		Log.i(getTag(), String.format(message, args));
+	}
+	
+	default void error(String message, Object... args) {
+		if (Objects.isNull(message)) {
+			throw new NullPointerException("Message cannot be null");
+		}
+		Log.e(getTag(), String.format(message, args));
+	}
+}
+	
+\end{lstlisting}
+
+\textbf{Tagged.java}
+\begin{lstlisting}[language=Java]
+package core.shared;
+
+public interface Tagged {
+	default String getTag() {
+		return this.getClass().getSimpleName();
+	}
+}	
+\end{lstlisting}
+
+\textbf{CreateDocumentFragment.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.create_doc;
+
+import android.app.AlertDialog;
+import android.content.Intent;
+import android.os.Bundle;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.CheckBox;
+import androidx.annotation.NonNull;
+import androidx.fragment.app.Fragment;
+import androidx.lifecycle.ViewModelProvider;
+import androidx.recyclerview.widget.DefaultItemAnimator;
+import androidx.recyclerview.widget.LinearLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
+import api.clients.middleware.HLFDataAdapter;
+import api.clients.middleware.HLFMiddlewareAPIClient;
+import api.clients.middleware.entity.Attributes;
+import api.clients.middleware.exception.HLFException;
+import api.clients.middleware.request.GetFormConfigRequest;
+import api.clients.middleware.request.NewDocRequest;
+import api.clients.middleware.response.GetFormConfigResponse;
+import com.auth0.android.jwt.JWT;
+import com.shamweel.jsontoforms.adapters.FormAdapter;
+import com.shamweel.jsontoforms.interfaces.JsonToFormClickListener;
+import com.shamweel.jsontoforms.models.JSONModel;
+import com.shamweel.jsontoforms.sigleton.DataValueHashMap;
+import core.activities.R;
+import core.activities.ui.main.MainActivity;
+import core.activities.ui.shared.Async;
+import core.activities.ui.shared.UserMessageShower;
+import core.activities.ui.shared.forms.FormUtils;
+import core.activities.ui.shared.forms.FormAdapterEx;
+import core.activities.ui.shared.ui.UiConstants;
+import core.sessions.SessionConstants;
+import core.sessions.SessionManager;
+import core.shared.ApplicationContext;
+import core.shared.Traceable;
+import org.apache.commons.lang3.StringUtils;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+
+import static com.shamweel.jsontoforms.sigleton.DataValueHashMap.dataValueHashMap;
+
+public class CreateDocumentFragment extends Fragment implements Traceable, JsonToFormClickListener, UserMessageShower {
+	
+	private CreateDocumentModel model;
+	RecyclerView recyclerView;
+	RecyclerView.LayoutManager layoutManager;
+	FormAdapter adapter;
+	List<JSONModel> jsonModelList = new ArrayList<>();
+	private boolean needUpdate;
+	static String DONT_SHOW_WIZARD_DIALOG_FLAG_KEY = SessionConstants.SESSION_PREFERENCES_PREFIX + "DONT_SHOW_WIZARD_DIALOG_FLAG";
+	
+	private void showGotoWizardOption() {
+		CheckBox dontShowAnymoreCheckBox = new CheckBox(requireContext());
+		dontShowAnymoreCheckBox.setText(R.string.dont_show_anymore);
+		dontShowAnymoreCheckBox.setChecked(false);
+		new AlertDialog.Builder(requireContext())
+		.setTitle(R.string.goto_wizard_title)
+		.setView(dontShowAnymoreCheckBox)
+		.setPositiveButton(R.string.answer_yes, (dialog, ignored) -> model.getDocTypes().observe(getViewLifecycleOwner(), docTypes -> {
+			Intent intent = new Intent(requireContext(), CreateDocumentWizardActivity.class);
+			intent.putStringArrayListExtra(UiConstants.DOC_TYPES_EXTRA, new ArrayList<>(docTypes));
+			startActivity(intent);
+			SessionManager.getInstance().store(ApplicationContext.get(), DONT_SHOW_WIZARD_DIALOG_FLAG_KEY, Boolean.toString(dontShowAnymoreCheckBox.isChecked()));
+		}))
+		.setNegativeButton(R.string.answer_no, (dialog, ignored) -> {
+			dialog.cancel();
+			SessionManager.getInstance().store(ApplicationContext.get(), DONT_SHOW_WIZARD_DIALOG_FLAG_KEY, Boolean.toString(dontShowAnymoreCheckBox.isChecked()));
+		}).show().setCanceledOnTouchOutside(true);
+	}
+	
+	public View onCreateView(@NonNull LayoutInflater inflater,
+	ViewGroup container, Bundle savedInstanceState) {
+		model = new ViewModelProvider(this).get(CreateDocumentModel.class);
+		View root = inflater.inflate(R.layout.fragment_create_doc, container, false);
+		// form init
+		String isNotWizardDialogShown = SessionManager.getInstance().get(ApplicationContext.get(), DONT_SHOW_WIZARD_DIALOG_FLAG_KEY);
+		if (StringUtils.isEmpty(isNotWizardDialogShown) || !Boolean.getBoolean(isNotWizardDialogShown)) {
+			showGotoWizardOption();
+		}
+		recyclerView = root.findViewById(R.id.recyclerView);
+		DataValueHashMap.init();
+		initRecyclerView();
+		fetchFormConfig();
+		return root;
+	}
+	
+	private void initRecyclerView() {
+		adapter = new FormAdapterEx(jsonModelList, getContext(), this);
+		layoutManager = new LinearLayoutManager(requireContext());
+		recyclerView.setLayoutManager(layoutManager);
+		recyclerView.setItemAnimator(new DefaultItemAnimator());
+		recyclerView.setAdapter(adapter);
+	}
+	
+	private void fetchFormConfig() {
+		final JWT token = SessionManager.getInstance().getUserToken(ApplicationContext.get()).orElseThrow(IllegalStateException::new);
+		Async.execute(() -> {
+			try {
+				final GetFormConfigResponse formConfig =
+				HLFMiddlewareAPIClient.getInstance().getFormConfig(new GetFormConfigRequest(), token.toString());
+				jsonModelList.addAll(retrieveUserDocTypes(formConfig.getConfig()));
+				requireActivity().runOnUiThread(() -> adapter.notifyDataSetChanged());
+			} catch (HLFException e) {
+				showUserMessage(R.string.unexpected_error);
+			}
+		});
+	}
+	
+	private <T extends JSONModel> List<T> retrieveUserDocTypes(List<T> formConfig) {
+		List<String> docTypes = new ArrayList<>();
+		formConfig.stream()
+		.filter(model -> "type".equals(model.getId()))
+		.findFirst()
+		.ifPresent(self -> self.getList()
+		.forEach(listItem -> {
+			String docType = listItem.getIndexText();
+			docTypes.add(docType);
+			listItem.setIndexText(HLFDataAdapter.toUserDocumentType(docType));
+		})
+		);
+		model.getDocTypes().postValue(docTypes);
+		return formConfig;
+	}
+	
+	@Override
+	public void onDestroyView() {
+		if (needUpdate)
+		Async.execute(() -> MainActivity.getModel().getDocuments());
+		super.onDestroyView();
+	}
+	
+	@Override
+	public void onAddAgainButtonClick() {
+	}
+	
+	@Override
+	public void onSubmitButtonClick() {
+		if (!FormUtils.isFieldsValidated(recyclerView, jsonModelList)) {
+			showUserMessage(R.string.validation_failed);
+			return;
+		}
+		
+		final JWT token = SessionManager.getInstance().getUserToken(ApplicationContext.get())
+		.orElseThrow(IllegalStateException::new);
+		Async.execute(() -> {
+			try {
+				List<String> signs = Arrays.asList(dataValueHashMap.get("signs").split(","));
+				final NewDocRequest newDocRequest = NewDocRequest.builder()
+				.title(dataValueHashMap.get("title"))
+				.type(HLFDataAdapter.fromUserDocumentType(dataValueHashMap.get("type")))
+				.owner(token.getClaim("member").asString())
+				.group(token.getClaim("group").asString())
+				.attributes(Attributes.builder()
+				.content(dataValueHashMap.get("content"))
+				.build())
+				.signsRequired(signs)
+				.build();
+				HLFMiddlewareAPIClient.getInstance().newDoc(newDocRequest, token.toString());
+				needUpdate = true;
+				requireActivity().runOnUiThread(() -> {
+					showUserMessage(String.format(getString(R.string.doc_created_hint), dataValueHashMap.get("title")));
+					FormUtils.clearForm(recyclerView, adapter);
+				});
+			} catch (HLFException e) {
+				showUserMessage(R.string.unexpected_error);
+			}
+		});
+	}
+}	
+\end{lstlisting}
+
+\textbf{CreateDocumentModel.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.create_doc;
+
+import androidx.lifecycle.MutableLiveData;
+import androidx.lifecycle.ViewModel;
+import core.shared.Tagged;
+import lombok.Getter;
+
+import java.util.List;
+
+public class CreateDocumentModel extends ViewModel implements Tagged {
+	@Getter
+	private final MutableLiveData<List<String>> docTypes;
+	
+	public CreateDocumentModel() {
+		docTypes = new MutableLiveData<>();
+	}
+}	
+\end{lstlisting}
+
+\textbf{CreateDoumentWizardActivity.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.create_doc;
+
+import android.content.Intent;
+import android.os.Bundle;
+import android.widget.ArrayAdapter;
+import android.widget.Spinner;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.util.Preconditions;
+import androidx.recyclerview.widget.DefaultItemAnimator;
+import androidx.recyclerview.widget.LinearLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
+import api.clients.middleware.HLFDataAdapter;
+import api.clients.middleware.HLFMiddlewareAPIClient;
+import api.clients.middleware.entity.Attributes;
+import api.clients.middleware.entity.Document;
+import api.clients.middleware.exception.HLFException;
+import api.clients.middleware.request.ChangeDocRequest;
+import api.clients.middleware.request.GetFormConfigRequest;
+import api.clients.middleware.request.NewDocRequest;
+import api.clients.middleware.response.GetFormConfigResponse;
+import com.auth0.android.jwt.JWT;
+import com.shamweel.jsontoforms.adapters.FormAdapter;
+import com.shamweel.jsontoforms.interfaces.JsonToFormClickListener;
+import com.shamweel.jsontoforms.models.JSONModel;
+import com.shamweel.jsontoforms.sigleton.DataValueHashMap;
+import core.activities.R;
+import core.activities.ui.create_doc.adapt.FormModelAdapter;
+import core.activities.ui.create_doc.adapt.attributes.AttributesRetriever;
+import core.activities.ui.docs_to_sign.DocsToSignFragment;
+import core.activities.ui.main.MainActivity;
+import core.activities.ui.shared.Async;
+import core.activities.ui.shared.UserMessageShower;
+import core.activities.ui.shared.forms.FormAdapterEx;
+import core.activities.ui.shared.forms.FormUtils;
+import core.activities.ui.shared.ui.ItemSelectedListener;
+import core.activities.ui.shared.ui.UiConstants;
+import core.sessions.SessionManager;
+import core.shared.ApplicationContext;
+import core.shared.Traceable;
+import org.apache.commons.lang3.StringUtils;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Objects;
+import java.util.stream.Collectors;
+
+import static com.shamweel.jsontoforms.sigleton.DataValueHashMap.dataValueHashMap;
+import static core.activities.ui.shared.ui.UiConstants.EDITED_DOC_TITLE_EXTRA;
+
+public class CreateDocumentWizardActivity extends AppCompatActivity implements UserMessageShower, Traceable, JsonToFormClickListener {
+	
+	RecyclerView recyclerView;
+	RecyclerView.LayoutManager layoutManager;
+	FormAdapter adapter;
+	String docType;
+	List<JSONModel> jsonModelList = new ArrayList<>();
+	private boolean needUpdate;
+	String docId;
+	
+	@Override
+	protected void onCreate(Bundle savedInstanceState) {
+		super.onCreate(savedInstanceState);
+		setContentView(R.layout.activity_create_document_wizard);
+		Spinner docTypeSelectionSpinner = findViewById(R.id.docTypeSelectionSpinner);
+		final List<String> docTypes = getIntent().getStringArrayListExtra(UiConstants.DOC_TYPES_EXTRA);
+		if (docTypes.size() <= 1) {
+			docTypeSelectionSpinner.setEnabled(false);
+		}
+		ArrayAdapter<String> adapter =
+		new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, docTypes.stream()
+		.map(HLFDataAdapter::toUserDocumentType)
+		.collect(Collectors.toList()));
+		docTypeSelectionSpinner.setAdapter(adapter);
+		docTypeSelectionSpinner.setOnItemSelectedListener((ItemSelectedListener) (parent, itemSelected, position, selectedId) -> {
+			final String userDocType = adapter.getItem(position);
+			DataValueHashMap.init();
+			jsonModelList.clear();
+			Document document = getIntent().getParcelableExtra(UiConstants.DOC_TO_EDIT_EXTRA);
+			docId = Objects.nonNull(document) ? document.getDocumentId() : null;
+			fetchFormConfig(HLFDataAdapter.fromUserDocumentType(userDocType), document);
+		});
+		recyclerView = findViewById(R.id.recyclerView);
+		DataValueHashMap.init();
+		initRecyclerView();
+		setResult(RESULT_OK, null);
+	}
+	
+	@Override
+	protected void onDestroy() {
+		if (needUpdate)
+		Async.execute(() -> MainActivity.getModel().getDocuments());
+		super.onDestroy();
+	}
+	
+	private void initRecyclerView() {
+		adapter = new FormAdapterEx(jsonModelList, this, this);
+		layoutManager = new LinearLayoutManager(this);
+		recyclerView.setLayoutManager(layoutManager);
+		recyclerView.setItemAnimator(new DefaultItemAnimator());
+		recyclerView.setAdapter(adapter);
+	}
+	
+	private void fetchFormConfig(String docType, Document document) {
+		if (Objects.nonNull(document)) {
+			Preconditions.checkArgument(docType.equals(document.getType()),
+			"Different types: form retched for type: " + docType + ", but doc's actual type: " + document.getStatus());
+		}
+		this.docType = docType;
+		final JWT token = SessionManager.getInstance().getUserToken(ApplicationContext.get()).orElseThrow(IllegalStateException::new);
+		Async.execute(() -> {
+			try {
+				final GetFormConfigResponse formConfig =
+				HLFMiddlewareAPIClient.getInstance().getFormConfig(new GetFormConfigRequest(docType), token.toString());
+				adaptFormModel(formConfig.getConfig(), document);
+				jsonModelList.addAll(formConfig.getConfig());
+				runOnUiThread(() -> adapter.notifyDataSetChanged());
+			} catch (HLFException e) {
+				showUserMessage(R.string.unexpected_error);
+			}
+		});
+	}
+	
+	private <T extends JSONModel> void adaptFormModel(List<T> formModel, Document document) {
+		if (StringUtils.isNotEmpty(docId) && Objects.nonNull(document)) {
+			FormModelAdapter.of(document).adapt(formModel);
+			List<String> inputsToDisable = Arrays.asList("title", "signs");
+			formModel.stream()
+			.filter(model -> inputsToDisable.contains(model.getId()))
+			.forEach(model -> model.setEditable(false));
+		}
+	}
+	
+	@Override
+	public void onAddAgainButtonClick() {
+		
+	}
+	
+	@Override
+	public void onSubmitButtonClick() {
+		if (!FormUtils.isFieldsValidated(recyclerView, jsonModelList)) {
+			showUserMessage(R.string.validation_failed);
+			return;
+		}
+		
+		Async.execute(() -> {
+			final JWT token = SessionManager.getInstance().getUserToken(ApplicationContext.get())
+			.orElseThrow(IllegalStateException::new);
+			List<String> signs = Arrays.asList(dataValueHashMap.get("signs").split(","));
+			final Attributes attributes = AttributesRetriever.of(docType).retrieve(dataValueHashMap);
+			if (StringUtils.isNotEmpty(docId)) {
+				final ChangeDocRequest request = ChangeDocRequest.builder()
+				.documentId(docId)
+				.type("EDIT")
+				.member(token.getClaim("member").asString())
+				.details("Изменено участником " + token.getClaim("member").asString())
+				// todo calc diff
+				.attributes(attributes)
+				.build();
+				try {
+					HLFMiddlewareAPIClient.getInstance().changeDoc(request, token.toString());
+					needUpdate = true;
+					// back to activity called
+					Intent intent = new Intent(CreateDocumentWizardActivity.this, DocsToSignFragment.class);
+					intent.putExtra(EDITED_DOC_TITLE_EXTRA, dataValueHashMap.get("title"));
+					setResult(RESULT_OK, intent);
+					finish();
+				} catch (HLFException e) {
+					showUserMessage(R.string.unexpected_error);
+				}
+			} else {
+				final NewDocRequest newDocRequest = NewDocRequest.builder()
+				.title(dataValueHashMap.get("title"))
+				.type(docType)
+				.owner(token.getClaim("member").asString())
+				.group(token.getClaim("group").asString())
+				.attributes(attributes)
+				.signsRequired(signs)
+				.build();
+				try {
+					HLFMiddlewareAPIClient.getInstance().newDoc(newDocRequest, token.toString());
+					needUpdate = true;
+				} catch (HLFException e) {
+					showUserMessage(R.string.unexpected_error);
+				}
+				runOnUiThread(() -> {
+					showUserMessage(String.format(getString(R.string.doc_created_hint), dataValueHashMap.get("title")));
+					FormUtils.clearForm(recyclerView, adapter);
+				});
+			}
+		});
+	}
+}	
+\end{lstlisting}
+
+\textbf{FormModelAdapter.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.create_doc.adapt;
+
+import api.clients.middleware.entity.Attributes;
+import api.clients.middleware.entity.Document;
+import com.shamweel.jsontoforms.FormConstants;
+import com.shamweel.jsontoforms.models.JSONModel;
+import com.shamweel.jsontoforms.sigleton.DataValueHashMap;
+import core.activities.ui.create_doc.adapt.attributes.GeneralAttributesRetriever;
+import core.activities.ui.create_doc.adapt.attributes.GraduatedExpellingAttributesRetriever;
+import core.activities.ui.create_doc.adapt.attributes.GraduationThesisTopicsAttributesRetriever;
+import core.activities.ui.create_doc.adapt.attributes.PracticePermissionAttributesRetriever;
+import core.activities.ui.shared.forms.FormAdapterEx;
+import core.activities.ui.shared.forms.JSONModelEx;
+import lombok.AllArgsConstructor;
+import org.json.JSONObject;
+
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+import static api.clients.middleware.adapt.DocTypesManager.classForType;
+import static api.clients.middleware.adapt.DocTypesManager.hasValidType;
+import static com.shamweel.jsontoforms.FormConstants.TYPE_CHECKBOX;
+import static com.shamweel.jsontoforms.FormConstants.TYPE_RADIO;
+
+@AllArgsConstructor
+public abstract class FormModelAdapter<A extends Attributes> {
+	protected final Document document;
+	
+	public final <T extends JSONModel> void adapt(List<T> formModel) {
+		final Attributes attrs = document.getAttributes();
+		hasValidType(attrs, classForType(document.getType()));
+		// common fields + boilerplate
+		for (T elementModel : formModel) {
+			if ("title".equals(elementModel.getId())) {
+				DataValueHashMap.put("title", document.getTitle());
+			} else if ("signs".equals(elementModel.getId())) {
+				DataValueHashMap.put("signs", String.join(",", document.getSignsRequired()));
+			} else {
+				adaptInternal(elementModel, (A) attrs);
+			}
+		}
+	}
+	
+	protected abstract <T extends JSONModel> void adaptInternal(T model, A attrs);
+	
+	public static FormModelAdapter<?> of(Document document) {
+		final String type = document.getType();
+		switch (type) {
+			case "General":
+			return new GeneralFormModelAdapter(document);
+			case "GraduationThesisTopics":
+			return new GraduationThesisTopicsFormModelAdapter(document);
+			case "PracticePermission":
+			return new PracticePermissionFormModelAdapter(document);
+			case "GraduatedExpelling":
+			return new GraduatedExpellingFormModelAdapter(document);
+			default:
+			throw new IllegalArgumentException("No form model adapter for doc with type = " + type);
+		}
+	}
+	
+	protected String getDataSupplierUiRepresentation(Map<String, String> uiData) {
+		return uiData.entrySet()
+		.stream()
+		.map(e -> e.getKey() + ": " + e.getValue())
+		.collect(Collectors.joining("\n"));
+	}
+	
+	protected String getDataSupplierUiKey(JSONModelEx modelEx, String id) {
+		return modelEx.getForm().stream()
+		.filter(control ->
+		(control.getId().equals(id) && Arrays.asList(TYPE_CHECKBOX, TYPE_RADIO).contains(control.getType()))
+		|| control.getId().equals(id + "_hint"))
+		.findFirst()
+		.map(JSONModel::getText)
+		.orElse(id);
+	}
+	
+	protected String getDataSupplierModelRepresentation(Map<String, String> modelData) {
+		return new JSONObject(modelData).toString();
+	}
+}
+	
+\end{lstlisting}
+
+\textbf{GeneralFormModelAdapter.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.create_doc.adapt;
+
+import api.clients.middleware.entity.Attributes;
+import api.clients.middleware.entity.Document;
+import com.shamweel.jsontoforms.models.JSONModel;
+import com.shamweel.jsontoforms.sigleton.DataValueHashMap;
+
+public class GeneralFormModelAdapter extends FormModelAdapter<Attributes> {
+	public GeneralFormModelAdapter(Document document) {
+		super(document);
+	}
+	
+	@Override
+	protected <T extends JSONModel> void adaptInternal(T model, Attributes attrs) {
+		if ("content".equals(model.getId())) {
+			DataValueHashMap.put("content", attrs.getContent());
+		}
+	}
+}
+	
+\end{lstlisting}
+\textbf{GradutedExpellingFormModelAdapter.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.create_doc.adapt;
+
+import api.clients.middleware.HLFDataAdapter;
+import api.clients.middleware.entity.Document;
+import api.clients.middleware.entity.GraduatedExpellingAttributes;
+import api.clients.middleware.entity.GraduatedExpellingStudent;
+import com.google.common.collect.ImmutableMap;
+import com.shamweel.jsontoforms.models.JSONModel;
+import com.shamweel.jsontoforms.sigleton.DataValueHashMap;
+import core.activities.ui.shared.forms.JSONModelEx;
+
+import java.util.Map;
+
+public class GraduatedExpellingFormModelAdapter extends FormModelAdapter<GraduatedExpellingAttributes> {
+	public GraduatedExpellingFormModelAdapter(Document document) {
+		super(document);
+	}
+	
+	@Override
+	protected <T extends JSONModel> void adaptInternal(T model, GraduatedExpellingAttributes attrs) {
+		switch (model.getId()) {
+			// text edits (multiline and plain)
+			case "course":
+			DataValueHashMap.put(model.getId(), attrs.course().toString());
+			break;
+			case "speciality":
+			DataValueHashMap.put(model.getId(), attrs.speciality());
+			break;
+			case "faculty":
+			DataValueHashMap.put(model.getId(), attrs.faculty());
+			break;
+			case "qualification":
+			DataValueHashMap.put(model.getId(), attrs.qualification());
+			break;
+			
+			// data supplier
+			case "student": {
+				final JSONModelEx modelEx = (JSONModelEx) model;
+				for (int i = 0; i < attrs.students().size(); i++) {
+					final GraduatedExpellingStudent student = attrs.students().get(i);
+					Map<String, String> uiData = ImmutableMap.<String, String>builder()
+					.put(getDataSupplierUiKey(modelEx, "fullName"), student.getCommonInfo().getFullName())
+					.put(getDataSupplierUiKey(modelEx, "nationality"), student.getCommonInfo().getNationality())
+					.put(getDataSupplierUiKey(modelEx, "onGovernmentPay"), HLFDataAdapter.toUserOnGovernmentPay(student.getCommonInfo().getOnGovernmentPay()))
+					.put(getDataSupplierUiKey(modelEx, "honoursDegree"), HLFDataAdapter.toUserHonoursDegree(student.getHasHonoursDegree()))
+					.put(getDataSupplierUiKey(modelEx, "examDate"), student.getExamDate())
+					.build();
+					
+					
+					Map<String, String> modelData = ImmutableMap.<String, String>builder()
+					.put("fullName", student.getCommonInfo().getFullName())
+					.put("nationality", student.getCommonInfo().getNationality())
+					.put("onGovernmentPay", student.getCommonInfo().getOnGovernmentPay().toString())
+					.put("honoursDegree", student.getHasHonoursDegree().toString())
+					.put("examDate", student.getExamDate())
+					.build();
+					
+					final JSONModel dataModel = JSONModelEx.picturedTextView(
+					"_data_" + modelEx.getId() + "_" + i,
+					getDataSupplierUiRepresentation(uiData));
+					modelEx.getForm().add(dataModel);
+					DataValueHashMap.dataValueHashMap.put(dataModel.getId(), getDataSupplierModelRepresentation(modelData));
+				}
+				break;
+			}
+		}
+	}
+}
+
+\end{lstlisting}
+\textbf{GraduationThesisTopicsFormModelAdapter.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.create_doc.adapt;
+
+import api.clients.middleware.HLFDataAdapter;
+import api.clients.middleware.entity.Document;
+import api.clients.middleware.entity.GraduationThesisTopicsAttributes;
+import api.clients.middleware.entity.GraduationThesisTopicsStudent;
+import com.google.common.collect.ImmutableMap;
+import com.shamweel.jsontoforms.models.JSONModel;
+import com.shamweel.jsontoforms.sigleton.DataValueHashMap;
+import core.activities.ui.shared.forms.JSONModelEx;
+
+import java.util.Map;
+
+public class GraduationThesisTopicsFormModelAdapter extends FormModelAdapter<GraduationThesisTopicsAttributes> {
+	public GraduationThesisTopicsFormModelAdapter(Document document) {
+		super(document);
+	}
+	
+	@Override
+	protected <T extends JSONModel> void adaptInternal(T model, GraduationThesisTopicsAttributes attrs) {
+		switch (model.getId()) {
+			// text edits (multiline and plain)
+			case "group":
+			DataValueHashMap.put(model.getId(), attrs.group());
+			break;
+			case "speciality":
+			DataValueHashMap.put(model.getId(), attrs.speciality());
+			break;
+			// radio
+			case "study_type": {
+				final String studyType = attrs.studyType();
+				model.getList().stream()
+				.filter(listModel -> listModel.getIndexText().equals(HLFDataAdapter.toUserStudyType(studyType)))
+				.findFirst().ifPresent(listModel -> model.setSelectedValue(listModel.getIndex().toString()));
+				break;
+			}
+			// data supplier
+			case "student": {
+				final JSONModelEx modelEx = (JSONModelEx) model;
+				for (int i = 0; i < attrs.students().size(); i++) {
+					final GraduationThesisTopicsStudent student = attrs.students().get(i);
+					Map<String, String> uiData = ImmutableMap.<String, String>builder()
+					.put(getDataSupplierUiKey(modelEx, "fullName"), student.getCommonInfo().getFullName())
+					.put(getDataSupplierUiKey(modelEx, "thesis"), student.getTopic())
+					.put(getDataSupplierUiKey(modelEx, "headFullName"), student.getAcademicAdvisorFullName())
+					.build();
+					
+					
+					Map<String, String> modelData = ImmutableMap.<String, String>builder()
+					.put("fullName", student.getCommonInfo().getFullName())
+					.put("thesis", student.getTopic())
+					.put("headFullName", student.getAcademicAdvisorFullName())
+					.build();
+					
+					final JSONModel dataModel = JSONModelEx.picturedTextView(
+					"_data_" + modelEx.getId() + "_" + i,
+					getDataSupplierUiRepresentation(uiData));
+					modelEx.getForm().add(dataModel);
+					DataValueHashMap.dataValueHashMap.put(dataModel.getId(), getDataSupplierModelRepresentation(modelData));
+				}
+				break;
+			}
+		}
+	}
+}
+
+\end{lstlisting}
+\textbf{PracticePermissionFormModelAdapter.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.create_doc.adapt;
+
+import api.clients.middleware.HLFDataAdapter;
+import api.clients.middleware.entity.Document;
+import api.clients.middleware.entity.PracticePermissionAttributes;
+import api.clients.middleware.entity.PracticePermissionStudent;
+import com.google.common.collect.ImmutableMap;
+import com.shamweel.jsontoforms.models.JSONModel;
+import com.shamweel.jsontoforms.sigleton.DataValueHashMap;
+import core.activities.ui.shared.forms.JSONModelEx;
+
+import java.util.Map;
+
+public class PracticePermissionFormModelAdapter extends FormModelAdapter<PracticePermissionAttributes> {
+	public PracticePermissionFormModelAdapter(Document document) {
+		super(document);
+	}
+	
+	@Override
+	protected <T extends JSONModel> void adaptInternal(T model, PracticePermissionAttributes attrs) {
+		switch (model.getId()) {
+			// text edits (multiline and plain)
+			case "course":
+			DataValueHashMap.put(model.getId(), attrs.course().toString());
+			break;
+			case "speciality":
+			DataValueHashMap.put(model.getId(), attrs.speciality());
+			break;
+			case "practiceType":
+			DataValueHashMap.put(model.getId(), attrs.practiceType());
+			break;
+			case "studyType":
+			DataValueHashMap.put(model.getId(), HLFDataAdapter.toUserStudyType(attrs.studyType()));
+			break;
+			case "dateFrom":
+			DataValueHashMap.put(model.getId(), attrs.dateFrom());
+			break;
+			case "dateTo":
+			DataValueHashMap.put(model.getId(), attrs.dateTo());
+			break;
+			
+			// data supplier
+			case "student": {
+				final JSONModelEx modelEx = (JSONModelEx) model;
+				for (int i = 0; i < attrs.students().size(); i++) {
+					final PracticePermissionStudent student = attrs.students().get(i);
+					Map<String, String> uiData = ImmutableMap.<String, String>builder()
+					.put(getDataSupplierUiKey(modelEx, "fullName"), student.getCommonInfo().getFullName())
+					.put(getDataSupplierUiKey(modelEx, "group"), student.getCommonInfo().getGroup())
+					.put(getDataSupplierUiKey(modelEx, "onGovernmentPay"), HLFDataAdapter.toUserOnGovernmentPay(student.getCommonInfo().getOnGovernmentPay()))
+					.put(getDataSupplierUiKey(modelEx, "practiceLocation"), student.getPracticeLocation())
+					.put(getDataSupplierUiKey(modelEx, "headFullName"), student.getHeadFullName())
+					.build();
+					
+					
+					Map<String, String> modelData = ImmutableMap.<String, String>builder()
+					.put("fullName", student.getCommonInfo().getFullName())
+					.put("group", student.getCommonInfo().getGroup())
+					.put("onGovernmentPay", HLFDataAdapter.toUserOnGovernmentPay(student.getCommonInfo().getOnGovernmentPay()))
+					.put("practiceLocation", student.getPracticeLocation())
+					.put("headFullName", student.getHeadFullName())
+					.build();
+					
+					final JSONModel dataModel = JSONModelEx.picturedTextView(
+					"_data_" + modelEx.getId() + "_" + i,
+					getDataSupplierUiRepresentation(uiData));
+					modelEx.getForm().add(dataModel);
+					DataValueHashMap.dataValueHashMap.put(dataModel.getId(), getDataSupplierModelRepresentation(modelData));
+				}
+				break;
+			}
+		}
+	}
+}
+
+\end{lstlisting}
+\textbf{StudentData.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.create_doc.adapt.attributes.model;
+
+import lombok.Data;
+
+@Data
+public class StudentData {
+	String fullName;
+	String thesis;
+	String nationality;
+	String honoursDegree;
+	String examDate;
+	String group;
+	String practiceLocation;
+	String onGovernmentPay;
+	String headFullName;
+}
+
+\end{lstlisting}
+\textbf{AttributesRetriever.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.create_doc.adapt.attributes;
+
+import api.clients.middleware.entity.Attributes;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import core.shared.Traceable;
+
+import java.util.Map;
+
+public abstract class AttributesRetriever implements Traceable {
+	protected Gson gson = new GsonBuilder()
+	.setPrettyPrinting()
+	.serializeNulls()
+	.disableHtmlEscaping()
+	.create();
+	
+	public static AttributesRetriever of(String type) {
+		switch (type) {
+			case "General":
+			return new GeneralAttributesRetriever();
+			case "GraduationThesisTopics":
+			return new GraduationThesisTopicsAttributesRetriever();
+			case "PracticePermission":
+			return new PracticePermissionAttributesRetriever();
+			case "GraduatedExpelling":
+			return new GraduatedExpellingAttributesRetriever();
+			default:
+			throw new IllegalArgumentException("No attributes retriever defined for doc with type = " + type);
+			
+		}
+	}
+	
+	public Attributes retrieve(Map<String, String> data) {
+		trace("Data got: %s", gson.toJson(data));
+		return retrieveInternal(data);
+	}
+	
+	public abstract Attributes retrieveInternal(Map<String, String> data);
+}
+
+\end{lstlisting}
+\textbf{GeneralAttributesRetriever.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.create_doc.adapt.attributes;
+
+import api.clients.middleware.entity.Attributes;
+
+import java.util.Map;
+
+public class GeneralAttributesRetriever extends AttributesRetriever {
+	@Override
+	public Attributes retrieveInternal(Map<String, String> data) {
+		final String content = data.get("content");
+		return new Attributes(content);
+	}
+}
+
+\end{lstlisting}
+\textbf{GraduatedExpellingAttributesRetriever.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.create_doc.adapt.attributes;
+
+import api.clients.middleware.entity.*;
+import core.activities.ui.create_doc.adapt.attributes.model.StudentData;
+import org.apache.commons.lang3.BooleanUtils;
+
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.stream.Collectors;
+
+public class GraduatedExpellingAttributesRetriever extends AttributesRetriever {
+	@Override
+	public Attributes retrieveInternal(Map<String, String> data) {
+		GraduatedExpellingAttributes attrs = new GraduatedExpellingAttributes();
+		attrs.course(Integer.parseInt(Objects.requireNonNull(data.get("course"))));
+		attrs.faculty(data.get("faculty"));
+		attrs.speciality(data.get("speciality"));
+		attrs.qualification(data.get("qualification"));
+		final List<GraduatedExpellingStudent> students = data.entrySet().stream()
+		.filter(e -> e.getKey().startsWith("_data_student"))
+		.map(e -> gson.fromJson(e.getValue(), StudentData.class))
+		.map(student -> {
+			GraduatedExpellingStudent output = new GraduatedExpellingStudent();
+			output.setExamDate(student.getExamDate());
+			output.setHasHonoursDegree(BooleanUtils.toBoolean(student.getHonoursDegree()));
+			Student commonInfo = new Student();
+			commonInfo.setFullName(student.getFullName());
+			commonInfo.setOnGovernmentPay("бюджет".equalsIgnoreCase(student.getOnGovernmentPay()));
+			commonInfo.setNationality(student.getNationality());
+			output.setCommonInfo(commonInfo);
+			return output;
+		})
+		.collect(Collectors.toList());
+		attrs.students(students);
+		return attrs;
+	}
+}
+
+\end{lstlisting}
+\textbf{GraduationThesisTopicsAttributesRetriever.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.create_doc.adapt.attributes;
+
+import api.clients.middleware.HLFDataAdapter;
+import api.clients.middleware.entity.Attributes;
+import api.clients.middleware.entity.GraduationThesisTopicsAttributes;
+import api.clients.middleware.entity.GraduationThesisTopicsStudent;
+import api.clients.middleware.entity.Student;
+import core.activities.ui.create_doc.adapt.attributes.model.StudentData;
+
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+public class GraduationThesisTopicsAttributesRetriever extends AttributesRetriever {
+	@Override
+	public Attributes retrieveInternal(Map<String, String> data) {
+		GraduationThesisTopicsAttributes attrs = new GraduationThesisTopicsAttributes();
+		attrs.group(data.get("group"));
+		attrs.studyType(HLFDataAdapter.fromUserStudyType(data.get("study_type")));
+		attrs.speciality(data.get("speciality"));
+		final List<GraduationThesisTopicsStudent> students = data.entrySet().stream()
+		.filter(e -> e.getKey().startsWith("_data_student"))
+		.map(e -> gson.fromJson(e.getValue(), StudentData.class))
+		.map(student -> {
+			GraduationThesisTopicsStudent output = new GraduationThesisTopicsStudent();
+			output.setTopic(student.getThesis());
+			output.setAcademicAdvisorFullName(student.getHeadFullName());
+			Student commonInfo = new Student();
+			commonInfo.setFullName(student.getFullName());
+			output.setCommonInfo(commonInfo);
+			return output;
+		})
+		.collect(Collectors.toList());
+		attrs.students(students);
+		return attrs;
+	}
+}
+
+\end{lstlisting}
+\textbf{PracticePermissionAttributesRetriever.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.create_doc.adapt.attributes;
+
+import api.clients.middleware.HLFDataAdapter;
+import api.clients.middleware.entity.Attributes;
+import api.clients.middleware.entity.PracticePermissionAttributes;
+import api.clients.middleware.entity.PracticePermissionStudent;
+import api.clients.middleware.entity.Student;
+import core.activities.ui.create_doc.adapt.attributes.model.StudentData;
+
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.stream.Collectors;
+
+public class PracticePermissionAttributesRetriever extends AttributesRetriever{
+	@Override
+	public Attributes retrieveInternal(Map<String, String> data) {
+		PracticePermissionAttributes attrs = new PracticePermissionAttributes();
+		attrs.course(Integer.parseInt(Objects.requireNonNull(data.get("course"))));
+		attrs.studyType(HLFDataAdapter.fromUserStudyType(data.get("studyType")));
+		attrs.speciality(data.get("speciality"));
+		attrs.practiceType(data.get("practiceType"));
+		attrs.dateFrom(data.get("dateFrom"));
+		attrs.dateTo(data.get("dateTo"));
+		final List<PracticePermissionStudent> students = data.entrySet().stream()
+		.filter(e -> e.getKey().startsWith("_data_student"))
+		.map(e -> gson.fromJson(e.getValue(), StudentData.class))
+		.map(student -> {
+			PracticePermissionStudent output = new PracticePermissionStudent();
+			output.setPracticeLocation(student.getPracticeLocation());
+			output.setHeadFullName(student.getHeadFullName());
+			Student commonInfo = new Student();
+			commonInfo.setFullName(student.getFullName());
+			commonInfo.setOnGovernmentPay("бюджет".equalsIgnoreCase(student.getOnGovernmentPay()));
+			commonInfo.setNationality(student.getNationality());
+			commonInfo.setGroup(student.getGroup());
+			output.setCommonInfo(commonInfo);
+			return output;
+		})
+		.collect(Collectors.toList());
+		attrs.students(students);
+		return attrs;
+	}
+}
+
+\end{lstlisting}
+\textbf{DocsToSignFragment.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.docs_to_sign;
+
+import android.app.AlertDialog;
+import android.content.Intent;
+import android.os.Bundle;
+import android.text.InputFilter;
+import android.text.InputType;
+import android.text.method.ScrollingMovementMethod;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.animation.DecelerateInterpolator;
+import android.view.animation.OvershootInterpolator;
+import android.view.inputmethod.EditorInfo;
+import android.widget.EditText;
+import android.widget.FrameLayout;
+import android.widget.ImageView;
+import androidx.fragment.app.Fragment;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.lifecycle.ViewModelProvider;
+import androidx.recyclerview.widget.DefaultItemAnimator;
+import api.clients.middleware.HLFDataAdapter;
+import api.clients.middleware.HLFMiddlewareAPIClient;
+import api.clients.middleware.entity.Document;
+import api.clients.middleware.exception.HLFException;
+import api.clients.middleware.request.ChangeDocRequest;
+import com.auth0.android.jwt.JWT;
+import com.yuyakaido.android.cardstackview.*;
+import core.activities.R;
+import core.activities.ui.create_doc.CreateDocumentWizardActivity;
+import core.activities.ui.docs_to_sign.model.Result;
+import core.activities.ui.docs_to_sign.model.SignDocModel;
+import core.activities.ui.docs_to_sign.swipe.DocStackAdapter;
+import core.activities.ui.docs_to_sign.swipe.DocStackListener;
+import core.activities.ui.docs_to_sign.swipe.SwipeItemModel;
+import core.activities.ui.main.MainActivity;
+import core.activities.ui.shared.Async;
+import core.activities.ui.shared.UserMessageShower;
+import core.activities.ui.shared.ui.UiConstants;
+import core.activities.ui.view_docs.DocumentsViewHolder;
+import core.sessions.SessionManager;
+import core.shared.ApplicationContext;
+import core.shared.Traceable;
+import org.apache.commons.lang3.StringUtils;
+
+import java.util.*;
+import java.util.stream.Collectors;
+
+import static android.app.Activity.RESULT_OK;
+import static core.activities.ui.shared.ui.UiConstants.*;
+
+public class DocsToSignFragment extends Fragment implements Traceable, UserMessageShower {
+	private CardStackLayoutManager manager;
+	private DocStackAdapter adapter;
+	private CardStackView cardStackView;
+	private SignDocModel model;
+	private boolean needUpdate;
+	
+	@Nullable
+	@Override
+	public View onCreateView(@NonNull LayoutInflater inflater,
+	@Nullable ViewGroup container,
+	@Nullable Bundle savedInstanceState) {
+		View root = inflater.inflate(R.layout.fragment_docs_to_sign, container, false);
+		cardStackView = root.findViewById(R.id.cardStackView);
+		model = new ViewModelProvider(this).get(SignDocModel.class);
+		model.getResult().observe(getViewLifecycleOwner(), self -> {
+			final Result result = model.getResult().getValue();
+			JWT token = SessionManager.getInstance().getUserToken(ApplicationContext.get())
+			.orElseThrow(() -> new IllegalStateException("Token must not be null at this stage."));
+			Async.execute(() -> {
+				try {
+					final String member = token.getClaim("member").asString();
+					HLFMiddlewareAPIClient.getInstance().changeDoc(ChangeDocRequest.builder()
+					.documentId(result.getCardSwiped().getDocument().getDocumentId())
+					.member(member)
+					.type(result.approved() ? "APPROVE" : "REJECT")
+					.details(result.rejected() ? ((Result.Reject) result).getReason() : null)
+					.build(), token.toString());
+					needUpdate = true;
+					requireActivity().runOnUiThread(() ->
+					showUserMessage(String.format(getString(
+					result.approved()
+					? R.string.doc_approved_hint
+					: R.string.doc_rejected_hint), member)));
+				} catch (HLFException e) {
+					cardStackView.rewind();
+					requireActivity().runOnUiThread(() -> showUserMessage(R.string.unexpected_error));
+				}
+			});
+			// show hint if it was the last card swiped
+			if (manager.getTopPosition() == adapter.getItemCount()) {
+				root.findViewById(R.id.noMoreDocsHint).setVisibility(View.VISIBLE);
+			}
+		});
+		manager = new CardStackLayoutManager(requireContext(), (DocStackListener) direction -> {
+			final SwipeItemModel docSwiped = adapter.getItems().get(manager.getTopPosition() - 1);
+			final Document document = docSwiped.getDocument();
+			if ("PROCESSING".equals(document.getStatus()) && direction == Direction.Right) {
+				processApprove(docSwiped);
+			} else if ("REJECTED".equals(document.getStatus()) && direction == Direction.Right) {
+				processEdit(docSwiped);
+			} else if ("PROCESSING".equals(document.getStatus()) && direction == Direction.Left) {
+				processReject(docSwiped);
+			}
+		});
+		manager.setStackFrom(StackFrom.Left);
+		manager.setVisibleCount(5);
+		manager.setTranslationInterval(20.0f);
+		manager.setScaleInterval(0.95f);
+		manager.setSwipeThreshold(0.4f);
+		manager.setMaxDegree(200.0f);
+		manager.setDirections(Direction.HORIZONTAL);
+		manager.setCanScrollVertical(false);
+		manager.setSwipeableMethod(SwipeableMethod.AutomaticAndManual);
+		manager.setRewindAnimationSetting(new RewindAnimationSetting.Builder()
+		.setDirection(Direction.Left)
+		.setDuration(Duration.Normal.duration)
+		.setInterpolator(new DecelerateInterpolator())
+		.build());
+		manager.setOverlayInterpolator(new OvershootInterpolator(4.f));
+		adapter = new DocStackAdapter(Collections.emptyList());
+		cardStackView.setAdapter(adapter);
+		// docs binding
+		MainActivity.getModel().getDocsResult().observe(getViewLifecycleOwner(), getDocsResult -> {
+			if (Objects.nonNull(getDocsResult.getDocuments())) {
+				adapter.setItems(
+				filterDocs(Objects.requireNonNull(getDocsResult.getDocuments())).stream()
+				.map(SwipeItemModel::new)
+				.collect(Collectors.toList())
+				);
+				if (adapter.getItemCount() == 0) {
+					root.findViewById(R.id.noMoreDocsHint).setVisibility(View.VISIBLE);
+				}
+			} else if (Objects.nonNull(getDocsResult.getError())) {
+				showUserMessage(getDocsResult.getError());
+			}
+		});
+		cardStackView.setLayoutManager(manager);
+		cardStackView.setItemAnimator(new DefaultItemAnimator());
+		return root;
+	}
+	
+	private void processEdit(SwipeItemModel docSwiped) {
+		Intent intent = new Intent(requireContext(), CreateDocumentWizardActivity.class);
+		final Document document = docSwiped.getDocument();
+		// binding params
+		intent.putExtra(DOC_TO_EDIT_EXTRA, document);
+		ArrayList<String> types = new ArrayList<>();
+		types.add(document.getType());
+		intent.putStringArrayListExtra(DOC_TYPES_EXTRA, types);
+		startActivityForResult(intent, EDIT_DOC_SIGNAL);
+	}
+	
+	@Override
+	public void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
+		super.onActivityResult(requestCode, resultCode, data);
+		if (requestCode == EDIT_DOC_SIGNAL) {
+			if (resultCode == RESULT_OK) {
+				String title = Optional.ofNullable(data)
+				.map(self -> self.getStringExtra(EDITED_DOC_TITLE_EXTRA))
+				.orElse(null);
+				if (StringUtils.isNotEmpty(title)) {
+					showUserMessage(getString(R.string.doc_edited, title));
+				} else {
+					cardStackView.rewind();
+				}
+			}
+		}
+	}
+	
+	@Override
+	public void onDestroyView() {
+		if (needUpdate)
+		Async.execute(() -> MainActivity.getModel().getDocuments());
+		super.onDestroyView();
+	}
+	
+	private void processApprove(SwipeItemModel cardSwiped) {
+		// call fabric sign doc by user
+		model.getResult().setValue(new Result.Approve(cardSwiped));
+	}
+	
+	private List<Document> filterDocs(List<Document> documents) {
+		final JWT token = SessionManager.getInstance().getUserToken(requireContext())
+		.orElseThrow(() -> new IllegalStateException("Token must not be null at this stage."));
+		final String member = Objects.requireNonNull(token.getClaim("member")).asString();
+		// owner is not user logged or logged and doc is rejected and doc requires his sign and it is hit turn to sign\edit
+		return documents.stream()
+		// to approve/reject others users doc
+		.filter(document -> (!member.equals(document.getOwner())
+		&& document.getStatus().equals("PROCESSING")
+		&& document.getSignsRequired().contains(member)
+		&& member.equals(document.getCurrentSign()))
+		// to edit logged user rejected docs
+		|| member.equals(document.getOwner()) && document.getStatus().equals("REJECTED"))
+		.collect(Collectors.toList());
+	}
+	
+	private EditText buildReasonForRejectField() {
+		// input field configuring
+		final EditText input = new EditText(requireContext());
+		input.setSingleLine(false);
+		input.setImeOptions(EditorInfo.IME_FLAG_NO_ENTER_ACTION);
+		input.setInputType(InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_CLASS_TEXT);
+		input.setMinLines(3);
+		input.setMaxLines(5);
+		// restrict comment length to 120 characters
+		InputFilter[] editFilters = input.getFilters();
+		InputFilter[] newFilters = new InputFilter[editFilters.length + 1];
+		System.arraycopy(editFilters, 0, newFilters, 0, editFilters.length);
+		newFilters[editFilters.length] = new InputFilter.LengthFilter(120);
+		input.setFilters(newFilters);
+		input.setVerticalScrollBarEnabled(true);
+		input.setMovementMethod(ScrollingMovementMethod.getInstance());
+		input.setScrollBarStyle(View.SCROLLBARS_INSIDE_INSET);
+		return input;
+	}
+	
+	private void processReject(SwipeItemModel cardSwiped) {
+		final EditText input = buildReasonForRejectField();
+		new AlertDialog.Builder(requireContext())
+		.setTitle(R.string.reason_for_reject)
+		.setView(input)
+		.setPositiveButton(R.string.submit_reject, (dialog, ignored) -> model.getResult().setValue(new Result.Reject(cardSwiped, input.getText().toString())))
+		.setNegativeButton(R.string.cancel, (dialog, ignored) -> {
+			cardStackView.rewind();
+			dialog.cancel();
+		}).show().setCanceledOnTouchOutside(false);
+	}
+	
+}
+\end{lstlisting}
+\textbf{SwipeItemModel.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.docs_to_sign.swipe;
+
+import api.clients.middleware.entity.Document;
+import lombok.AccessLevel;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.ToString;
+import lombok.experimental.FieldDefaults;
+
+@AllArgsConstructor
+@Data
+@ToString
+@FieldDefaults(makeFinal = true, level = AccessLevel.PRIVATE)
+public class SwipeItemModel {
+	Document document;
+}
+
+\end{lstlisting}
+\textbf{AuthActivity.java}
+\begin{lstlisting}[language=Java]
+
+\end{lstlisting}
+\textbf{DocStackListener.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.docs_to_sign.swipe;
+
+import android.view.View;
+import com.yuyakaido.android.cardstackview.CardStackListener;
+import com.yuyakaido.android.cardstackview.Direction;
+
+@FunctionalInterface
+public interface DocStackListener extends CardStackListener {
+	
+	@Override
+	default void onCardDragging(Direction direction, float ratio) {
+		
+	}
+	
+	@Override
+	default void onCardRewound() {
+		
+	}
+	
+	@Override
+	default void onCardCanceled() {
+		
+	}
+	
+	@Override
+	default void onCardAppeared(View view, int position) {
+		
+	}
+	
+	@Override
+	default void onCardDisappeared(View view, int position) {
+		
+	}
+}
+
+\end{lstlisting}
+\textbf{DocStackAdapter.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.docs_to_sign.swipe;
+
+import android.util.TypedValue;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+import androidx.annotation.NonNull;
+import androidx.core.content.ContextCompat;
+import androidx.recyclerview.widget.RecyclerView;
+import api.clients.middleware.entity.Document;
+import core.activities.R;
+import core.shared.ApplicationContext;
+import org.apache.commons.lang3.StringUtils;
+
+import java.util.List;
+
+public class DocStackAdapter extends RecyclerView.Adapter<DocStackAdapter.ViewHolder> {
+	
+	private List<SwipeItemModel> items;
+	
+	public DocStackAdapter(List<SwipeItemModel> items) {
+		setItems(items);
+	}
+	
+	@NonNull
+	@Override
+	public ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
+		LayoutInflater inflater = LayoutInflater.from(parent.getContext());
+		View view = inflater.inflate(R.layout.item_card, parent, false);
+		return new ViewHolder(view);
+	}
+	
+	@Override
+	public void onBindViewHolder(@NonNull ViewHolder holder, int position) {
+		final SwipeItemModel swipeItemModel = items.get(position);
+		holder.setData(swipeItemModel);
+		final Document document = swipeItemModel.getDocument();
+		holder.configureOverlays(document);
+	}
+	
+	@Override
+	public int getItemCount() {
+		return items.size();
+	}
+	
+	public static class ViewHolder extends RecyclerView.ViewHolder {
+		TextView _title, _owner, _date, _status, _reason, _content, _rightOverlayText, _leftOverlayText;
+		ImageView _rightOverlayImg, _leftOverlayImg;
+		LinearLayout _signsContainer;
+		
+		ViewHolder(@NonNull View itemView) {
+			super(itemView);
+			_title = itemView.findViewById(R.id.item_title);
+			_owner = itemView.findViewById(R.id.item_owner);
+			_date = itemView.findViewById(R.id.item_date);
+			_status = itemView.findViewById(R.id.item_status);
+			_reason = itemView.findViewById(R.id.item_reason);
+			_content = itemView.findViewById(R.id.item_content);
+			_signsContainer = itemView.findViewById(R.id.signsContainer);
+			_rightOverlayText = itemView.findViewById(R.id.rightHint);
+			_leftOverlayText = itemView.findViewById(R.id.leftHint);
+			_rightOverlayImg = itemView.findViewById(R.id.rightImg);
+			_leftOverlayImg = itemView.findViewById(R.id.leftImg);
+		}
+		
+		void setData(SwipeItemModel model) {
+			_title.setText(model.getDocument().getTitle());
+			_owner.setText(ApplicationContext.get().getText(R.string.doc_owner_prefix) + " "
+			+ model.getDocument().getOwner());
+			_date.setText(ApplicationContext.get().getString(R.string.doc_date_prefix) + " "
+			+ model.getDocument().getDateForUser());
+			_status.setText(ApplicationContext.get().getString(R.string.doc_status_prefix) + " "
+			+ model.getDocument().getStatusForUser());
+			final String reason = model.getDocument().getLastChange().getDetails();
+			if ("REJECTED".equals(model.getDocument().getStatus()) && StringUtils.isNotEmpty(reason)) {
+				_reason.setVisibility(View.VISIBLE);
+				_reason.setText(ApplicationContext.get().getString(R.string.doc_reject_reason) + " "
+				+ reason);
+			} else {
+				_reason.setVisibility(View.GONE);
+			}
+			_content.setText(model.getDocument().getAttributes().getContent());
+			// signs
+			for (int i = 0; i < model.getDocument().getSignsRequired().size(); i++) {
+				String sign = model.getDocument().getSignsRequired().get(i);
+				TextView signTextView = new TextView(itemView.getContext());
+				signTextView.setText(sign);
+				signTextView.setTextColor(ContextCompat.getColor(ApplicationContext.get(), R.color.colorFullBlack));
+				signTextView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
+				if (model.getDocument().getSignedBy().contains(sign)) {
+					// green check
+					signTextView.setCompoundDrawablesWithIntrinsicBounds(R.drawable.ic_approve_small, 0, 0, 0);
+				} else {
+					// red cross
+					signTextView.setCompoundDrawablesWithIntrinsicBounds(R.drawable.ic_reject_small, 0, 0, 0);
+				}
+				_signsContainer.addView(signTextView, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+			}
+		}
+		
+		public void configureOverlays(Document document) {
+			if ("PROCESSING".equals(document.getStatus())) {
+				// approve
+				_rightOverlayImg.setImageResource(R.drawable.ic_approve);
+				_rightOverlayText.setText(R.string.action_approve);
+				_rightOverlayText.setTextColor(ApplicationContext.get().getResources().getColor(R.color.color_green));
+				// reject
+				_leftOverlayImg.setImageResource(R.drawable.ic_reject);
+				_leftOverlayText.setText(R.string.action_reject);
+				_leftOverlayText.setTextColor(ApplicationContext.get().getResources().getColor(R.color.color_red));
+			} else {
+				// edit
+				_rightOverlayImg.setImageResource(R.drawable.ic_edit);
+				_rightOverlayText.setText(R.string.action_edit);
+				_rightOverlayText.setTextColor(ApplicationContext.get().getResources().getColor(R.color.grey));
+				// skip
+				_leftOverlayImg.setImageResource(R.drawable.ic_later);
+				_leftOverlayText.setText(R.string.action_later);
+				_leftOverlayText.setTextColor(ApplicationContext.get().getResources().getColor(R.color.grey));
+			}
+		}
+	}
+	
+	public List<SwipeItemModel> getItems() {
+		return items;
+	}
+	
+	public void setItems(List<SwipeItemModel> items) {
+		this.items = items;
+		notifyDataSetChanged();
+	}
+}
+
+\end{lstlisting}
+\textbf{Result.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.docs_to_sign.model;
+
+import core.activities.ui.docs_to_sign.swipe.SwipeItemModel;
+import lombok.AccessLevel;
+import lombok.AllArgsConstructor;
+import lombok.EqualsAndHashCode;
+import lombok.Getter;
+import lombok.experimental.FieldDefaults;
+
+@Getter
+@AllArgsConstructor
+public abstract class Result {
+	SwipeItemModel cardSwiped;
+	
+	public abstract boolean approved();
+	
+	public abstract boolean rejected();
+	
+	@EqualsAndHashCode(callSuper = true)
+	@Getter
+	@FieldDefaults(makeFinal = true, level = AccessLevel.PRIVATE)
+	public static class Reject extends Result {
+		String reason;
+		
+		public Reject(SwipeItemModel cardSwiped, String reason) {
+			super(cardSwiped);
+			this.reason = reason;
+		}
+		
+		@Override
+		public boolean approved() {
+			return false;
+		}
+		
+		@Override
+		public boolean rejected() {
+			return true;
+		}
+	}
+	
+	@EqualsAndHashCode(callSuper = true)
+	@Getter
+	@FieldDefaults(level = AccessLevel.PRIVATE)
+	public static class Approve extends Result {
+		public Approve(SwipeItemModel cardSwiped) {
+			super(cardSwiped);
+		}
+		
+		@Override
+		public boolean approved() {
+			return true;
+		}
+		
+		@Override
+		public boolean rejected() {
+			return false;
+		}
+	}
+}
+
+\end{lstlisting}
+\textbf{MainActivity.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.main;
+
+import android.app.AlertDialog;
+import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.os.Bundle;
+import android.util.Base64;
+import android.widget.ImageView;
+import android.widget.TextView;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.widget.Toolbar;
+import androidx.core.view.GravityCompat;
+import androidx.drawerlayout.widget.DrawerLayout;
+import androidx.lifecycle.ViewModelProvider;
+import androidx.navigation.NavController;
+import androidx.navigation.Navigation;
+import androidx.navigation.fragment.NavHostFragment;
+import androidx.navigation.ui.AppBarConfiguration;
+import androidx.navigation.ui.NavigationUI;
+import com.auth0.android.jwt.JWT;
+import com.google.android.material.navigation.NavigationView;
+import core.activities.R;
+import core.activities.ui.auth.SignInActivity;
+import core.activities.ui.main.model.MainModel;
+import core.activities.ui.shared.UserMessageShower;
+import core.sessions.SessionManager;
+import core.shared.ApplicationContext;
+import core.shared.Traceable;
+import lombok.AccessLevel;
+import lombok.Getter;
+import lombok.experimental.FieldDefaults;
+import org.apache.commons.lang3.StringUtils;
+
+import java.util.Objects;
+
+import static core.activities.ui.auth.AuthActivity.MEMBER_AVATAR_STORED_KEY;
+
+@FieldDefaults(level = AccessLevel.PRIVATE)
+public class MainActivity extends AppCompatActivity implements Traceable, UserMessageShower {
+	AppBarConfiguration appBarConfiguration;
+	@Getter
+	static MainModel model;
+	
+	@Override
+	protected void onCreate(Bundle savedInstanceState) {
+		super.onCreate(savedInstanceState);
+		setContentView(R.layout.activity_main);
+		// queries docs async
+		model = new ViewModelProvider(this).get(MainModel.class);
+		Toolbar toolbar = findViewById(R.id.toolbar);
+		setSupportActionBar(toolbar);
+		
+		DrawerLayout drawer = findViewById(R.id.drawer_layout);
+		
+		NavigationView navigationView = findViewById(R.id.navView);
+		
+		final JWT token = SessionManager.getInstance().getUserToken(ApplicationContext.get())
+		.orElseThrow(() -> new IllegalStateException("Token must not be null at this stage."));
+		
+		trace("User token got = %s", token.toString());
+		
+		// member
+		TextView userTextView = navigationView.getHeaderView(0).findViewById(R.id.memberTextView);
+		userTextView.setText(token.getClaim("member").asString());
+		
+		// user email
+		userTextView = navigationView.getHeaderView(0).findViewById(R.id.memberEmailTextView);
+		userTextView.setText(token.getClaim("email").asString());
+		
+		// user avatar
+		final String avatarBase64 = SessionManager.getInstance().get(ApplicationContext.get(), MEMBER_AVATAR_STORED_KEY);
+		final ImageView memberAvatar = navigationView.getHeaderView(0).findViewById(R.id.memberAvatar);
+		if (StringUtils.isNotEmpty(avatarBase64)) {
+			memberAvatar.setImageBitmap(getImageFromBase64(avatarBase64));
+		} else {
+			memberAvatar.setImageDrawable(getDrawable(R.mipmap.ic_launcher_round));
+		}
+		
+		appBarConfiguration = new AppBarConfiguration.Builder(R.id.navDocsToSign, R.id.navDocsView, R.id.navCreateDoc)
+		.setOpenableLayout(drawer)
+		.build();
+		final NavHostFragment navHostFragment = (NavHostFragment) getSupportFragmentManager().findFragmentById(R.id.navHostFragment);
+		final NavController navController =
+		Objects.requireNonNull(navHostFragment, "No nav host found, check configuration").getNavController();
+		NavigationUI.setupActionBarWithNavController(this, navController, appBarConfiguration);
+		// NavigationUI.setupWithNavController(navigationView, navController);
+		// not complete impl of NavigationUI.setupWithNavController
+		navigationView.setNavigationItemSelectedListener(item -> {
+			// special behavior
+			if (item.getItemId() == R.id.navLogout) {
+				buildAndShowLogoutDialog();
+			} else if (item.getItemId() == R.id.navSettings) {
+				buildAndShowNotSupportedYetDialog();
+			}
+			// ordinary behavior
+			NavigationUI.onNavDestinationSelected(item, navController);
+			
+			//close navigation drawer
+			drawer.closeDrawer(GravityCompat.START);
+			return true;
+		});
+	}
+	
+	private Bitmap getImageFromBase64(String encoded) {
+		String toDecode = encoded;
+		if (encoded.contains(",")) {
+			// removes 'data:image/png;base64,' and 'data:image/jpeg;base64,'
+			toDecode = encoded.substring(encoded.indexOf(',') + 1);
+		}
+		byte[] decoded = Base64.decode(toDecode, Base64.DEFAULT);
+		return BitmapFactory.decodeByteArray(decoded, 0, decoded.length);
+	}
+	
+	private void buildAndShowNotSupportedYetDialog() {
+		AlertDialog.Builder builder = new AlertDialog.Builder(this);
+		builder.setTitle(R.string.not_supported_yet_dialog_title);
+		builder.setPositiveButton(R.string.ok, (dialog, which) -> {
+			dialog.dismiss();
+		});
+		builder.show();
+	}
+	
+	private void buildAndShowLogoutDialog() {
+		AlertDialog.Builder builder = new AlertDialog.Builder(this);
+		builder.setTitle(R.string.logout_dialog_title);
+		builder.setPositiveButton(R.string.answer_yes, (dialog, which) -> {
+			SessionManager.getInstance().getUserToken(ApplicationContext.get())
+			.ifPresent(token ->
+			showUserMessage(
+			String.format(getString(R.string.logout_hint), token.getClaim("member").asString())
+			)
+			);
+			SessionManager.getInstance().endUserSession(ApplicationContext.get());
+			Intent intent = new Intent(this, SignInActivity.class);
+			startActivity(intent);
+			finish();
+		});
+		
+		builder.setNegativeButton(R.string.answer_no, (dialog, which) -> dialog.cancel());
+		builder.show();
+	}
+	
+	@Override
+	public boolean onSupportNavigateUp() {
+		NavController navController = Navigation.findNavController(this, R.id.navHostFragment);
+		return NavigationUI.navigateUp(navController, appBarConfiguration)
+		|| super.onSupportNavigateUp();
+	}
+}
+\end{lstlisting}
+\textbf{MainModel.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.main.model;
+
+import android.app.Application;
+import androidx.annotation.NonNull;
+import androidx.lifecycle.MutableLiveData;
+import api.clients.middleware.HLFMiddlewareAPIClient;
+import api.clients.middleware.entity.Document;
+import api.clients.middleware.exception.HLFException;
+import api.clients.middleware.request.GetDocsRequest;
+import core.activities.R;
+import core.activities.ui.shared.Async;
+import core.activities.ui.shared.TokenedModel;
+import core.shared.Traceable;
+import lombok.AccessLevel;
+import lombok.Getter;
+import lombok.Setter;
+import lombok.experimental.FieldDefaults;
+
+import java.util.Collections;
+import java.util.List;
+
+@FieldDefaults(level = AccessLevel.PRIVATE)
+@Getter
+@Setter
+public class MainModel extends TokenedModel implements Traceable {
+	MutableLiveData<GetDocsResult> docsResult = new MutableLiveData<>();
+	
+	public MainModel(@NonNull Application application) {
+		super(application);
+		docsResult.setValue(
+		GetDocsResult.builder()
+		.documents(Collections.emptyList())
+		.build()
+		);
+		Async.execute(this::getDocuments);
+	}
+	
+	public void getDocuments() {
+		final String group = token.getClaim("group").asString();
+		GetDocsRequest getDocsRequest = GetDocsRequest.builder()
+		.group(group)
+		.withContent(Boolean.TRUE)
+		.build();
+		try {
+			final List<Document> documents = HLFMiddlewareAPIClient.getInstance().getDocs(getDocsRequest, token.toString()).getDocuments();
+			// only postValue in background!
+			docsResult.postValue(
+			GetDocsResult.builder()
+			.documents(documents)
+			.build()
+			);
+		} catch (HLFException e) {
+			docsResult.postValue(
+			GetDocsResult.builder()
+			.error(R.string.unexpected_error)
+			.build()
+			);
+		}
+	}
+}
+\end{lstlisting}
+\textbf{GetDocsResult.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.main.model;
+
+import androidx.annotation.Nullable;
+import api.clients.middleware.entity.Document;
+import lombok.AccessLevel;
+import lombok.Builder;
+import lombok.Getter;
+import lombok.experimental.FieldDefaults;
+
+import java.util.List;
+
+@Getter
+@Builder
+@FieldDefaults(makeFinal = true, level = AccessLevel.PRIVATE)
+public class GetDocsResult {
+	@Nullable
+	List<Document> documents;
+	@Nullable
+	Integer error;
+}
+
+\end{lstlisting}
+\textbf{ViewDocumentsFragment.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.view_docs;
+
+import android.app.AlertDialog;
+import android.os.Bundle;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.LinearLayout;
+import android.widget.ProgressBar;
+import android.widget.Switch;
+import android.widget.TextView;
+import androidx.annotation.NonNull;
+import androidx.fragment.app.Fragment;
+import androidx.lifecycle.ViewModelProvider;
+import androidx.navigation.Navigation;
+import androidx.recyclerview.widget.LinearLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
+import api.clients.middleware.entity.Document;
+import com.auth0.android.jwt.JWT;
+import com.google.android.material.floatingactionbutton.FloatingActionButton;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import core.activities.R;
+import core.activities.ui.main.MainActivity;
+import core.activities.ui.shared.Async;
+import core.activities.ui.shared.UserMessageShower;
+import core.activities.ui.view_docs.model.FilterConfig;
+import core.activities.ui.view_docs.model.ViewDocumentsModel;
+import core.sessions.SessionConstants;
+import core.sessions.SessionManager;
+import core.shared.ApplicationContext;
+import core.shared.Traceable;
+import lombok.AccessLevel;
+import lombok.experimental.FieldDefaults;
+import org.apache.commons.lang3.StringUtils;
+
+import java.util.Arrays;
+import java.util.List;
+import java.util.Objects;
+import java.util.stream.Collectors;
+
+@FieldDefaults(level = AccessLevel.PRIVATE)
+public class ViewDocumentsFragment extends Fragment implements Traceable, UserMessageShower {
+	RecyclerView recyclerView;
+	ViewDocumentsModel model;
+	
+	// 3 secs
+	final int docsLoadingDelay = 3_000;
+	boolean docsLoadingEnabled = true;
+	
+	static final Gson GSON = new GsonBuilder()
+	.serializeNulls()
+	.disableHtmlEscaping()
+	.create();
+	
+	static String FILTER_CONFIG_STORED_KEY = SessionConstants.SESSION_PREFERENCES_PREFIX + "FILTER_CONFIG_STORED";
+	
+	public View onCreateView(@NonNull LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState) {
+		View root = inflater.inflate(R.layout.fragment_view_docs, container, false);
+		model = new ViewModelProvider(this).get(ViewDocumentsModel.class);
+		// view filter pre config
+		final String filterConfigJson = SessionManager.getInstance().get(ApplicationContext.get(), FILTER_CONFIG_STORED_KEY);
+		FilterConfig fc = StringUtils.isNotEmpty(filterConfigJson)
+		? GSON.fromJson(filterConfigJson, FilterConfig.class) : FilterConfig.DEFAULT;
+		model.getFilterConfig().setValue(fc);
+		model.getFilterConfig().observe(getViewLifecycleOwner(), config -> {
+			// save config in shared preferences
+			SessionManager.getInstance().store(ApplicationContext.get(), FILTER_CONFIG_STORED_KEY, GSON.toJson(config));
+			// reset recycler view according to config
+			updateUI(MainActivity.getModel().getDocsResult().getValue().getDocuments());
+		});
+		// createDoc button configuring
+		final FloatingActionButton createDocButton = root.findViewById(R.id.createDocButton);
+		final FloatingActionButton configureFilterButton = root.findViewById(R.id.configureFilterButton);
+		configureFilterButton.setOnClickListener(self -> buildAndShowConfigureFilter());
+		createDocButton.setOnClickListener(self -> Navigation.findNavController(self).navigate(R.id.navCreateDoc));
+		
+		// recycler view configuring
+		recyclerView = root.findViewById(R.id.recyclerView);
+		recyclerView.setHasFixedSize(true);
+		recyclerView.setLayoutManager(new LinearLayoutManager(requireContext()));
+		
+		final DocumentsViewAdapter adapter = new DocumentsViewAdapter();
+		recyclerView.setAdapter(adapter);
+		recyclerView.addOnScrollListener(new RecyclerView.OnScrollListener() {
+			@Override
+			public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {
+				if (docsLoadingEnabled && isEdgeReached(recyclerView, newState)) {
+					// 1. disable loading
+					docsLoadingEnabled = false;
+					// 2. show certain ui
+					final ProgressBar docLoading = root.findViewById(R.id.docLoading);
+					final TextView docLoadingText = root.findViewById(R.id.docLoadingText);
+					docLoading.setVisibility(View.VISIBLE);
+					docLoadingText.setVisibility(View.VISIBLE);
+					// 3.1 update docs async
+					Async.execute(() -> {
+						MainActivity.getModel().getDocuments();
+						// 3.2 hide ui, after docs are updated
+						requireActivity().runOnUiThread(() -> {
+							docLoading.setVisibility(View.GONE);
+							docLoadingText.setVisibility(View.GONE);
+						});
+					});
+					// 4. restrict loading to once in docsLoadingDelay
+					recyclerView.getHandler().postDelayed(() -> docsLoadingEnabled = true, docsLoadingDelay);
+				}
+			}
+		});
+		
+		// docs binding
+		MainActivity.getModel().getDocsResult().observe(getViewLifecycleOwner(), getDocsResult -> {
+			if (Objects.nonNull(getDocsResult.getDocuments())) {
+				updateUI(getDocsResult.getDocuments());
+			} else if (Objects.nonNull(getDocsResult.getError())) {
+				showUserMessage(getDocsResult.getError());
+			}
+		});
+		
+		return root;
+	}
+	
+	private boolean isEdgeReached(RecyclerView recyclerView, int newState) {
+		return newState == RecyclerView.SCROLL_STATE_IDLE // current state is idle
+		&& !recyclerView.canScrollVertically(-1) //  and can't scroll up
+		|| !recyclerView.canScrollVertically(1); // or can't scroll down
+	}
+	
+	private void updateUI(List<Document> documents) {
+		// 1. Filter all docs in general
+		List<Document> docsToRender = filterDocs(documents);
+		// 2. Filter by user's filter config
+		final FilterConfig filter = model.getFilterConfig().getValue();
+		docsToRender = docsToRender.stream()
+		// isRejectedDocsShown = false, => hide if status = 'REJECTED'
+		.filter(document -> {
+			if (!filter.isRejectedDocsShown()) {
+				return !document.getStatus().equals("REJECTED");
+			} else {
+				return true;
+			}
+		})
+		// isCompletedDocsShown = false, => hide if status = 'CLOSED' or 'APPROVED'
+		.filter(document -> {
+			if (!filter.isCompletedDocsShown()) {
+				return !Arrays.asList("CLOSED", "APPROVED").contains(document.getStatus());
+			} else {
+				return true;
+			}
+		})
+		.collect(Collectors.toList());
+		// 3. render
+		((DocumentsViewAdapter) Objects.requireNonNull(recyclerView.getAdapter())).setDocs(docsToRender);
+	}
+	
+	private List<Document> filterDocs(List<Document> documents) {
+		final JWT token = SessionManager.getInstance().getUserToken(requireContext())
+		.orElseThrow(() -> new IllegalStateException("Token must not be null at this stage."));
+		final String member = Objects.requireNonNull(token.getClaim("member")).asString();
+		return documents.stream()
+		// owner is logged user or doc requires sign of the user
+		.filter(document -> member.equals(document.getOwner()) || document.getSignsRequired().contains(member))
+		.collect(Collectors.toList());
+	}
+	
+	private void buildAndShowConfigureFilter() {
+		// filterConfig.isCompletedDocsShown
+		final Switch completedDocsSwitch = new Switch(requireContext());
+		completedDocsSwitch.setText(R.string.is_completed_docs_shown);
+		completedDocsSwitch.setSwitchPadding(10);
+		completedDocsSwitch.setChecked(Objects.requireNonNull(model.getFilterConfig().getValue()).isCompletedDocsShown());
+		// filterConfig.isRejectedDocsShown
+		final Switch rejectedDocsSwitch = new Switch(requireContext());
+		rejectedDocsSwitch.setText(R.string.is_rejected_docs_shown);
+		rejectedDocsSwitch.setSwitchPadding(10);
+		rejectedDocsSwitch.setChecked(Objects.requireNonNull(model.getFilterConfig().getValue()).isRejectedDocsShown());
+		final LinearLayout root = new LinearLayout(requireContext());
+		root.setOrientation(LinearLayout.VERTICAL);
+		root.setPadding(40, 40, 40, 40);
+		root.addView(completedDocsSwitch, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+		root.addView(rejectedDocsSwitch, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+		new AlertDialog.Builder(requireContext())
+		.setTitle(R.string.configure_filters_title)
+		.setView(root)
+		.setPositiveButton(R.string.apply, (dialog, ignored) -> {
+			FilterConfig fc = new FilterConfig(completedDocsSwitch.isChecked(), rejectedDocsSwitch.isChecked());
+			model.getFilterConfig().setValue(fc);
+		})
+		.setNegativeButton(R.string.close, (dialog, ignored) -> dialog.cancel())
+		.show().setCanceledOnTouchOutside(true);
+		
+	}
+}
+\end{lstlisting}
+\textbf{DocViewActivity.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.view_docs;
+
+import android.os.Bundle;
+import android.util.TypedValue;
+import android.view.View;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.content.ContextCompat;
+import api.clients.middleware.entity.Document;
+import core.activities.R;
+import core.activities.ui.shared.UserMessageShower;
+import core.shared.ApplicationContext;
+import core.shared.Traceable;
+import lombok.AccessLevel;
+import lombok.Getter;
+import lombok.experimental.Accessors;
+import lombok.experimental.FieldDefaults;
+import org.apache.commons.lang3.StringUtils;
+
+@FieldDefaults(level = AccessLevel.PRIVATE)
+@Getter
+@Accessors(fluent = true, prefix = "_")
+public class DocViewActivity extends AppCompatActivity implements Traceable, UserMessageShower {
+	TextView _title, _date, _status, _reason, _owner, _content;
+	LinearLayout _signsContainer;
+	
+	@Override
+	protected void onCreate(Bundle savedInstanceState) {
+		super.onCreate(savedInstanceState);
+		setContentView(R.layout.activity_doc_view);
+		_title = findViewById(R.id.item_title);
+		_date = findViewById(R.id.item_date);
+		_owner = findViewById(R.id.item_owner);
+		_status = findViewById(R.id.item_status);
+		_reason = findViewById(R.id.item_reason);
+		_content = findViewById(R.id.item_content);
+		_signsContainer = findViewById(R.id.signsContainer);
+		final Document doc = getIntent().getParcelableExtra("doc");
+		updateUi(doc);
+	}
+	
+	private void updateUi(Document doc) {
+		_title.setText(doc.getTitle());
+		_owner.setText(ApplicationContext.get().getText(R.string.doc_owner_prefix) + " "
+		+ doc.getOwner());
+		_date.setText(ApplicationContext.get().getString(R.string.doc_date_prefix) + " "
+		+ doc.getDateForUser());
+		final String reason = doc.getLastChange().getDetails();
+		if ("REJECTED".equals(doc.getStatus()) && StringUtils.isNotEmpty(reason)) {
+			_reason.setVisibility(View.VISIBLE);
+			_reason.setText(ApplicationContext.get().getString(R.string.doc_reject_reason) + " "
+			+ reason);
+		} else {
+			_reason.setVisibility(View.GONE);
+		}
+		_status.setText(ApplicationContext.get().getString(R.string.doc_status_prefix) + " "
+		+ doc.getStatusForUser());
+		_content.setText(doc.getAttributes().getContent());
+		// signs
+		for (int i = 0; i < doc.getSignsRequired().size(); i++) {
+			String sign = (String) doc.getSignsRequired().get(i);
+			TextView signTextView = new TextView(this);
+			signTextView.setText(sign);
+			signTextView.setTextColor(ContextCompat.getColor(ApplicationContext.get(), R.color.colorFullBlack));
+			signTextView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
+			if (doc.getSignedBy().contains(sign)) {
+				// green check
+				signTextView.setCompoundDrawablesWithIntrinsicBounds(R.drawable.ic_approve_small, 0, 0, 0);
+			} else {
+				// red cross
+				signTextView.setCompoundDrawablesWithIntrinsicBounds(R.drawable.ic_reject_small, 0, 0, 0);
+			}
+			_signsContainer.addView(signTextView, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+		}
+	}
+}
+
+\end{lstlisting}
+\textbf{DocumentsViewHolder.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.view_docs;
+
+import android.view.View;
+import android.widget.TextView;
+import androidx.annotation.NonNull;
+import androidx.recyclerview.widget.RecyclerView;
+import api.clients.middleware.entity.Document;
+import core.activities.R;
+import lombok.AccessLevel;
+import lombok.Getter;
+import lombok.Setter;
+import lombok.experimental.Accessors;
+import lombok.experimental.FieldDefaults;
+
+@Getter
+@Setter
+@FieldDefaults(makeFinal = true, level = AccessLevel.PRIVATE)
+@Accessors(fluent = true, prefix = "_")
+public class DocumentsViewHolder extends RecyclerView.ViewHolder {
+	TextView _date;
+	TextView _title;
+	TextView _status;
+	
+	public DocumentsViewHolder(@NonNull View itemView) {
+		super(itemView);
+		_date = itemView.findViewById(R.id.tvDate);
+		_title = itemView.findViewById(R.id.tvTitle);
+		_status = itemView.findViewById(R.id.tvStatus);
+	}
+	
+	void updateUI(Document doc) {
+		_date.setText(doc.getDateForUser());
+		_title.setText(doc.getTitle());
+		_status.setText(doc.getStatusForUser());
+	}
+}
+
+\end{lstlisting}
+\textbf{DocumentsViewAdapter.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.view_docs;
+
+import android.content.Intent;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
+import androidx.annotation.NonNull;
+import androidx.recyclerview.widget.RecyclerView;
+import api.clients.middleware.entity.Document;
+import core.activities.R;
+import core.shared.Traceable;
+import lombok.AccessLevel;
+import lombok.AllArgsConstructor;
+import lombok.NoArgsConstructor;
+import lombok.experimental.FieldDefaults;
+
+import java.util.List;
+
+@FieldDefaults(level = AccessLevel.PRIVATE)
+@AllArgsConstructor
+@NoArgsConstructor
+public class DocumentsViewAdapter extends RecyclerView.Adapter<DocumentsViewHolder> implements Traceable {
+	List<Document> _docs;
+	
+	@NonNull
+	@Override
+	public DocumentsViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
+		View view = LayoutInflater.from(parent.getContext())
+		.inflate(R.layout.documents_view_item, parent, false);
+		return new DocumentsViewHolder(view);
+	}
+	
+	@Override
+	public void onBindViewHolder(@NonNull DocumentsViewHolder holder, int position) {
+		final Document document = _docs.get(position);
+		holder.itemView.setOnClickListener(self -> {
+			Intent intent = new Intent(holder.itemView.getContext(), DocViewActivity.class);
+			intent.putExtra("doc", _docs.get(position));
+			holder.itemView.getContext().startActivity(intent);
+		});
+		holder.updateUI(document);
+	}
+	
+	public void setDocs(List<Document> docs) {
+		this._docs = docs;
+		notifyDataSetChanged();
+	}
+	
+	@Override
+	public int getItemCount() {
+		return _docs.size();
+	}
+}
+
+\end{lstlisting}
+\textbf{FilterConfig.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.view_docs.model;
+
+import lombok.AccessLevel;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.ToString;
+import lombok.experimental.FieldDefaults;
+
+@Data
+@AllArgsConstructor
+@ToString
+@FieldDefaults(makeFinal = true, level = AccessLevel.PRIVATE)
+public class FilterConfig {
+	boolean isCompletedDocsShown;
+	boolean isRejectedDocsShown;
+	
+	public static final FilterConfig DEFAULT = new FilterConfig(true, true);
+}
+
+\end{lstlisting}
+\textbf{ViewDocumentsModel.java}
+\begin{lstlisting}[language=Java]
+package core.activities.ui.view_docs.model;
+
+import androidx.lifecycle.MutableLiveData;
+import androidx.lifecycle.ViewModel;
+import core.shared.Traceable;
+import lombok.Getter;
+
+public class ViewDocumentsModel extends ViewModel implements Traceable {
+	
+	@Getter
+	private final MutableLiveData<FilterConfig> filterConfig;
+	
+	public ViewDocumentsModel() {
+		filterConfig = new MutableLiveData<>();
+	}
+}
+
+\end{lstlisting}
+\textbf{HLFDataAdapter.java}
+\begin{lstlisting}[language=Java]
+package api.clients.middleware;
+
+import android.content.Context;
+import com.google.common.collect.BiMap;
+import com.google.common.collect.HashBiMap;
+import core.activities.R;
+import core.shared.ApplicationContext;
+
+import javax.xml.bind.DatatypeConverter;
+import java.text.SimpleDateFormat;
+import java.util.Calendar;
+import java.util.Locale;
+import java.util.Optional;
+
+public class HLFDataAdapter {
+	private static final BiMap<String, String> DOC_TYPES;
+	private static final BiMap<String, String> DOC_STATUSES;
+	private static final BiMap<String, Boolean> ON_GOVERNMENT_PAY;
+	private static final BiMap<String, Boolean> HONOURS_DEGREE;
+	private static final BiMap<String, String> STUDY_TYPES;
+	
+	static final SimpleDateFormat DATE_FORMATTER = new SimpleDateFormat("dd.MM.yyyy", Locale.ENGLISH);
+	
+	static {
+		final Context ctx = ApplicationContext.get();
+		DOC_TYPES = HashBiMap.create(4);
+		DOC_TYPES.put("General", ctx.getString(R.string.doc_type_general));
+		DOC_TYPES.put("GraduatedExpelling", ctx.getString(R.string.doc_type_graduated_expelling));
+		DOC_TYPES.put("PracticePermission", ctx.getString(R.string.doc_type_practice_permission));
+		DOC_TYPES.put("GraduationThesisTopics", ctx.getString(R.string.doc_type_graduation_thesis_topics));
+		
+		
+		DOC_STATUSES = HashBiMap.create(4);
+		DOC_STATUSES.put("PROCESSING", ctx.getString(R.string.doc_status_processing));
+		DOC_STATUSES.put("APPROVED", ctx.getString(R.string.doc_status_approved));
+		DOC_STATUSES.put("CLOSED", ctx.getString(R.string.doc_status_closed));
+		DOC_STATUSES.put("REJECTED", ctx.getString(R.string.doc_status_rejected));
+		
+		STUDY_TYPES = HashBiMap.create(3);
+		STUDY_TYPES.put("FULL_TIME", ctx.getString(R.string.study_type_full_time));
+		STUDY_TYPES.put("PART_TIME", ctx.getString(R.string.study_type_part_time));
+		STUDY_TYPES.put("SELF_STUDY", ctx.getString(R.string.study_type_self_study));
+		
+		ON_GOVERNMENT_PAY = HashBiMap.create(2);
+		ON_GOVERNMENT_PAY.put(ctx.getString(R.string.on_government_pay_yes), Boolean.TRUE);
+		ON_GOVERNMENT_PAY.put(ctx.getString(R.string.on_government_pay_no), Boolean.FALSE);
+		
+		HONOURS_DEGREE = HashBiMap.create(2);
+		HONOURS_DEGREE.put(ctx.getString(R.string.yes), Boolean.TRUE);
+		HONOURS_DEGREE.put(ctx.getString(R.string.no), Boolean.FALSE);
+		
+	}
+	
+	private static <T> T throwIfNull(T ref) {
+		return Optional.ofNullable(ref).orElseThrow(() -> new IllegalArgumentException(ref + " mustn't be null"));
+	}
+	
+	public static String parseDate(String date) {
+		final Calendar calendar = DatatypeConverter.parseDateTime(date);
+		return DATE_FORMATTER.format(calendar.getTime());
+	}
+	
+	public static String toUserStatus(String hlfStatus) {
+		return throwIfNull(DOC_STATUSES.get(hlfStatus));
+	}
+	
+	public static String fromUserStatus(String userStatus) {
+		return throwIfNull(DOC_STATUSES.inverse().get(userStatus));
+	}
+	
+	public static String fromUserDocumentType(String userDocType) {
+		return throwIfNull(DOC_TYPES.inverse().get(userDocType));
+	}
+	
+	public static String toUserDocumentType(String hlfDocType) {
+		return throwIfNull(DOC_TYPES.get(hlfDocType));
+	}
+	
+	public static String fromUserStudyType(String userStudyType) {
+		return throwIfNull(STUDY_TYPES.inverse().get(userStudyType));
+	}
+	
+	public static String toUserStudyType(String hlfStudy) {
+		return throwIfNull(STUDY_TYPES.get(hlfStudy));
+	}
+	
+	public static Boolean fromUserOnGovernmentPay(String userOnGovernmentPay) {
+		return throwIfNull(ON_GOVERNMENT_PAY.get(userOnGovernmentPay));
+	}
+	
+	public static String toUserOnGovernmentPay(Boolean hlfOnGovernmentPay) {
+		return throwIfNull(ON_GOVERNMENT_PAY.inverse().get(hlfOnGovernmentPay));
+	}
+	
+	public static Boolean fromUserHonoursDegree(String userOnGovernmentPay) {
+		return throwIfNull(HONOURS_DEGREE.get(userOnGovernmentPay));
+	}
+	
+	public static String toUserHonoursDegree(Boolean hlfOnGovernmentPay) {
+		return throwIfNull(HONOURS_DEGREE.inverse().get(hlfOnGovernmentPay));
+	}
+}
+
+\end{lstlisting}
+\textbf{HLFMiddlewareAPIClient.java}
+\begin{lstlisting}[language=Java]
+package api.clients.middleware;
+
+import android.content.res.Resources;
+import api.clients.UtilsTLS;
+import api.clients.middleware.entity.Document;
+import api.clients.middleware.exception.HLFException;
+import api.clients.middleware.adapt.DocumentAdapter;
+import api.clients.middleware.request.*;
+import api.clients.middleware.response.*;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonObject;
+import core.shared.ApplicationContext;
+import core.shared.Traceable;
+import lombok.AccessLevel;
+import lombok.SneakyThrows;
+import lombok.experimental.FieldDefaults;
+import okhttp3.*;
+import okio.Buffer;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.Objects;
+import java.util.Properties;
+
+import static api.clients.middleware.HLFMiddlewareEndpoints.*;
+
+@FieldDefaults(makeFinal = true, level = AccessLevel.PRIVATE)
+public class HLFMiddlewareAPIClient implements Traceable {
+	String middlewareUrl;
+	OkHttpClient client;
+	Gson gson = new GsonBuilder()
+	.setPrettyPrinting()
+	.serializeNulls()
+	.registerTypeAdapter(Document.class, new DocumentAdapter())
+	.disableHtmlEscaping()
+	.create();
+	static MediaType JSON_MEDIA_TYPE = MediaType.parse("application/json; charset=utf-8");
+	static String X_ACCESS_TOKEN_HEADER = "x-access-token";
+	
+	
+	private static HLFMiddlewareAPIClient INSTANCE;
+	
+	public static HLFMiddlewareAPIClient getInstance() {
+		if (INSTANCE == null) {
+			INSTANCE = new HLFMiddlewareAPIClient();
+		}
+		return INSTANCE;
+	}
+	
+	@SneakyThrows(IOException.class)
+	private HLFMiddlewareAPIClient() {
+		final Resources resources = ApplicationContext.get().getResources();
+		// todo change to android strings, retrieving middleware url from application properties
+		String propertiesFileName = "application.properties";
+		final InputStream inputStream = resources.getAssets().open(propertiesFileName);
+		final Properties properties = new Properties();
+		properties.load(inputStream);
+		middlewareUrl = properties.getProperty("middleware.url");
+		trace("Got middlewareUrl = %s from %s properties filename.", middlewareUrl, propertiesFileName);
+		client = UtilsTLS.getSSLClient(resources);
+	}
+	
+	public NewDocResponse newDoc(NewDocRequest request, String token) throws HLFException {
+		return executeRequest(prepareAndLogRequest(request, NEW_DOC,
+		Headers.of(X_ACCESS_TOKEN_HEADER, token)), NewDocResponse.class);
+	}
+	
+	public GetDocsResponse getDocs(GetDocsRequest request, String token) throws HLFException {
+		return executeRequest(prepareAndLogRequest(request, GET_DOCS,
+		Headers.of(X_ACCESS_TOKEN_HEADER, token)), GetDocsResponse.class);
+	}
+	
+	public ChangeDocResponse changeDoc(ChangeDocRequest request, String token) throws HLFException {
+		return executeRequest(prepareAndLogRequest(request, CHANGE_DOC,
+		Headers.of(X_ACCESS_TOKEN_HEADER, token)), ChangeDocResponse.class);
+	}
+	
+	public GetFormConfigResponse getFormConfig(GetFormConfigRequest request, String token) throws HLFException {
+		return executeRequest(prepareAndLogRequest(request, GET_FORM_CONFIG,
+		Headers.of(X_ACCESS_TOKEN_HEADER, token)), GetFormConfigResponse.class);
+	}
+	
+	public SignUpResponse signUp(SignUpRequest request) throws HLFException {
+		return executeRequest(prepareAndLogRequest(request, SIGN_UP), SignUpResponse.class);
+	}
+	
+	public SignInResponse signIn(SignInRequest request) throws HLFException {
+		return executeRequest(prepareAndLogRequest(request, SIGN_IN), SignInResponse.class);
+	}
+	
+	
+	private Request prepareAndLogRequest(Object request, HLFMiddlewareEndpoints endpoint) {
+		return prepareAndLogRequest(request, endpoint, null);
+	}
+	
+	@SneakyThrows(IOException.class)
+	private Request prepareAndLogRequest(Object request, HLFMiddlewareEndpoints endpoint, Headers headers) {
+		RequestBody body = RequestBody.create(JSON_MEDIA_TYPE, gson.toJson(request));
+		Request.Builder httpsRequestBuilder = new Request.Builder()
+		.url(endpoint.getUrlForEndpoint(middlewareUrl))
+		.post(body);
+		if (Objects.nonNull(headers)) {
+			httpsRequestBuilder.headers(headers);
+		}
+		Request httpsRequest = httpsRequestBuilder.build();
+		trace("Network request  %s\n" +
+		"Body", httpsRequest.url(), bodyToString(httpsRequest));
+		return httpsRequest;
+	}
+	
+	@SneakyThrows(IOException.class)
+	private <T> T executeRequest(Request request, Class<T> responseEntity) throws HLFException {
+		try (Response response = client.newCall(request).execute()) {
+			if (response.body() == null) {
+				throw new IOException("No response body got from " + request.url());
+			}
+			final JsonObject json = gson.fromJson(response.body().charStream(), JsonObject.class);
+			final JsonObject payload = json.getAsJsonObject("payload");
+			if (response.code() != 200) {
+				error("Error response %s", payload);
+				final ErrorResponse errorResponse = gson.fromJson(payload, ErrorResponse.class);
+				throw HLFException.of(errorResponse);
+			}
+			trace("Response %s", payload);
+			return gson.fromJson(payload, responseEntity);
+		}
+	}
+	
+	private String bodyToString(final Request request) throws IOException {
+		final Request copy = request.newBuilder().build();
+		final Buffer buffer = new Buffer();
+		if (copy.body() == null) {
+			return "Empty body";
+		}
+		copy.body().writeTo(buffer);
+		return buffer.readUtf8();
+	}
+}
+
+\end{lstlisting}
+\textbf{HLFMiddlewareEndpoints.java}
+\begin{lstlisting}[language=Java]
+package api.clients.middleware;
+
+import lombok.AccessLevel;
+import lombok.AllArgsConstructor;
+import lombok.Getter;
+import lombok.experimental.FieldDefaults;
+
+@AllArgsConstructor
+@FieldDefaults(makeFinal = true, level = AccessLevel.PRIVATE)
+@Getter
+public enum HLFMiddlewareEndpoints {
+	// auth apis
+	SIGN_UP("/api/auth/signUp"),
+	SIGN_IN("/api/auth/signIn"),
+	// service apis
+	GET_FORM_CONFIG("/api/service/getFormConfig"),
+	// user apis
+	NEW_DOC("/api/chaincode/newDoc"),
+	CHANGE_DOC("/api/chaincode/changeDoc"),
+	GET_DOCS("/api/chaincode/getDocs");
+	String endpointPath;
+	
+	public String getUrlForEndpoint(String url) {
+		return url + endpointPath;
+	}
+}
+
+\end{lstlisting}
+\textbf{Document.java}
+\begin{lstlisting}[language=Java]
+package api.clients.middleware.entity;
+
+import android.os.Parcel;
+import android.os.Parcelable;
+import api.clients.middleware.HLFDataAdapter;
+import api.clients.middleware.adapt.DocTypesManager;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.ToString;
+import org.apache.commons.collections.CollectionUtils;
+
+import java.util.Collection;
+import java.util.List;
+
+@Data
+@ToString
+@NoArgsConstructor
+public class Document implements Parcelable {
+	String documentId;
+	String title;
+	String owner;
+	String group;
+	String type;
+	String date;
+	Attributes attributes;
+	String status;
+	List<Change> changes;
+	List<String> signsRequired;
+	List<String> signedBy;
+	
+	
+	protected Document(Parcel in) {
+		documentId = in.readString();
+		title = in.readString();
+		owner = in.readString();
+		group = in.readString();
+		type = in.readString();
+		date = in.readString();
+		attributes = in.readParcelable(DocTypesManager.classForType(type).getClassLoader());
+		status = in.readString();
+		changes = in.createTypedArrayList(Change.CREATOR);
+		signsRequired = in.createStringArrayList();
+		signedBy = in.createStringArrayList();
+	}
+	
+	public static final Creator<Document> CREATOR = new Creator<Document>() {
+		@Override
+		public Document createFromParcel(Parcel in) {
+			return new Document(in);
+		}
+		
+		@Override
+		public Document[] newArray(int size) {
+			return new Document[size];
+		}
+	};
+	
+	public String getStatusForUser() {
+		return HLFDataAdapter.toUserStatus(status);
+	}
+	
+	public String getDateForUser() {
+		return HLFDataAdapter.parseDate(date);
+	}
+	
+	public Change getLastChange() {
+		if (CollectionUtils.isNotEmpty(changes)) {
+			return changes.get(changes.size() - 1);
+		}
+		return new Change();
+	}
+	
+	public String getCurrentSign() {
+		if (signedBy == null || signedBy.isEmpty()) {
+			return signsRequired.get(0);
+		}
+		String lastSigned = signedBy.get(signedBy.size() - 1);
+		if (!lastSigned.equals(signsRequired.get(signsRequired.size() - 1))) {
+			// last signed is not last signed required (doc is not signed)
+			for (int i = 0; i < signsRequired.size() - 1; i++) {
+				if (signsRequired.get(i).equals(lastSigned)) {
+					return signsRequired.get(i + 1);
+				}
+			}
+		}
+		return signsRequired.get(signsRequired.size() - 1);
+	}
+	
+	@Override
+	public int describeContents() {
+		return 0;
+	}
+	
+	@Override
+	public void writeToParcel(Parcel dest, int flags) {
+		dest.writeString(documentId);
+		dest.writeString(title);
+		dest.writeString(owner);
+		dest.writeString(group);
+		dest.writeString(type);
+		dest.writeString(date);
+		dest.writeParcelable(attributes, flags);
+		dest.writeString(status);
+		dest.writeTypedList(changes);
+		dest.writeStringList(signsRequired);
+		dest.writeStringList(signedBy);
+	}
+}
+
+\end{lstlisting}
+\textbf{Attributes.java}
+\begin{lstlisting}[language=Java]
+package api.clients.middleware.entity;
+
+import android.os.Parcel;
+import android.os.Parcelable;
+import lombok.*;
+
+@Data
+@ToString
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class Attributes implements Parcelable {
+	String content;
+	
+	protected Attributes(Parcel in) {
+		content = in.readString();
+	}
+	
+	public static final Creator<Attributes> CREATOR = new Creator<Attributes>() {
+		@Override
+		public Attributes createFromParcel(Parcel in) {
+			return new Attributes(in);
+		}
+		
+		@Override
+		public Attributes[] newArray(int size) {
+			return new Attributes[size];
+		}
+	};
+	
+	@Override
+	public int describeContents() {
+		return 0;
+	}
+	
+	@Override
+	public void writeToParcel(Parcel dest, int flags) {
+		dest.writeString(content);
+	}
+}
+
+\end{lstlisting}
+\textbf{Change.java}
+\begin{lstlisting}[language=Java]
+package api.clients.middleware.entity;
+
+import android.os.Parcel;
+import android.os.Parcelable;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.ToString;
+
+@Data
+@ToString
+@NoArgsConstructor
+public class Change implements Parcelable {
+	String member;
+	String type;
+	String date;
+	String details;
+	
+	protected Change(Parcel in) {
+		member = in.readString();
+		type = in.readString();
+		date = in.readString();
+		details = in.readString();
+	}
+	
+	public static final Creator<Change> CREATOR = new Creator<Change>() {
+		@Override
+		public Change createFromParcel(Parcel in) {
+			return new Change(in);
+		}
+		
+		@Override
+		public Change[] newArray(int size) {
+			return new Change[size];
+		}
+	};
+	
+	@Override
+	public int describeContents() {
+		return 0;
+	}
+	
+	@Override
+	public void writeToParcel(Parcel dest, int flags) {
+		dest.writeString(member);
+		dest.writeString(type);
+		dest.writeString(date);
+		dest.writeString(details);
+	}
+}
+
+\end{lstlisting}
+\textbf{Student.java}
+\begin{lstlisting}[language=Java]
+package api.clients.middleware.entity;
+
+import android.os.Parcel;
+import android.os.Parcelable;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.ToString;
+
+@Data
+@ToString
+@NoArgsConstructor
+public class Student implements Parcelable {
+	String fullName;
+	String nationality;
+	String group;
+	Boolean onGovernmentPay;
+	
+	protected Student(Parcel in) {
+		fullName = in.readString();
+		nationality = in.readString();
+		group = in.readString();
+		byte tmpOnGovernmentPay = in.readByte();
+		onGovernmentPay = tmpOnGovernmentPay == 0 ? null : tmpOnGovernmentPay == 1;
+	}
+	
+	public static final Creator<Student> CREATOR = new Creator<Student>() {
+		@Override
+		public Student createFromParcel(Parcel in) {
+			return new Student(in);
+		}
+		
+		@Override
+		public Student[] newArray(int size) {
+			return new Student[size];
+		}
+	};
+	
+	@Override
+	public int describeContents() {
+		return 0;
+	}
+	
+	@Override
+	public void writeToParcel(Parcel dest, int flags) {
+		dest.writeString(fullName);
+		dest.writeString(nationality);
+		dest.writeString(group);
+		dest.writeByte((byte) (onGovernmentPay == null ? 0 : onGovernmentPay ? 1 : 2));
+	}
+}
+
+\end{lstlisting}
+\textbf{GraduatedExpellingAttributes.java}
+\begin{lstlisting}[language=Java]
+package api.clients.middleware.entity;
+
+import android.os.Parcel;
+import lombok.Data;
+import lombok.EqualsAndHashCode;
+import lombok.NoArgsConstructor;
+import lombok.experimental.Accessors;
+
+import java.util.List;
+
+@EqualsAndHashCode(callSuper = true)
+@NoArgsConstructor
+@Data
+@Accessors(fluent = true)
+public class GraduatedExpellingAttributes extends Attributes {
+	Integer course;
+	String speciality;
+	String studyType;
+	String faculty;
+	String qualification;
+	List<GraduatedExpellingStudent> students;
+	
+	protected GraduatedExpellingAttributes(Parcel in) {
+		super(in);
+		if (in.readByte() == 0) {
+			course = null;
+		} else {
+			course = in.readInt();
+		}
+		speciality = in.readString();
+		studyType = in.readString();
+		faculty = in.readString();
+		qualification = in.readString();
+		students = in.createTypedArrayList(GraduatedExpellingStudent.CREATOR);
+	}
+	
+	public static final Creator<GraduatedExpellingAttributes> CREATOR = new Creator<GraduatedExpellingAttributes>() {
+		@Override
+		public GraduatedExpellingAttributes createFromParcel(Parcel in) {
+			return new GraduatedExpellingAttributes(in);
+		}
+		
+		@Override
+		public GraduatedExpellingAttributes[] newArray(int size) {
+			return new GraduatedExpellingAttributes[size];
+		}
+	};
+	
+	@Override
+	public int describeContents() {
+		return 0;
+	}
+	
+	@Override
+	public void writeToParcel(Parcel dest, int flags) {
+		super.writeToParcel(dest, flags);
+		if (course == null) {
+			dest.writeByte((byte) 0);
+		} else {
+			dest.writeByte((byte) 1);
+			dest.writeInt(course);
+		}
+		dest.writeString(speciality);
+		dest.writeString(studyType);
+		dest.writeString(faculty);
+		dest.writeString(qualification);
+		dest.writeTypedList(students);
+	}
+}
+
+\end{lstlisting}
+\textbf{GraduatedExpellingStudent.java}
+\begin{lstlisting}[language=Java]
+package api.clients.middleware.entity;
+
+import android.os.Parcel;
+import android.os.Parcelable;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.ToString;
+
+@Data
+@ToString
+@NoArgsConstructor
+public class GraduatedExpellingStudent implements Parcelable {
+	Student commonInfo;
+	Boolean hasHonoursDegree;
+	String examDate;
+	
+	protected GraduatedExpellingStudent(Parcel in) {
+		commonInfo = in.readParcelable(Student.class.getClassLoader());
+		byte tmpHasHonoursDegree = in.readByte();
+		hasHonoursDegree = tmpHasHonoursDegree == 0 ? null : tmpHasHonoursDegree == 1;
+		examDate = in.readString();
+	}
+	
+	public static final Creator<GraduatedExpellingStudent> CREATOR = new Creator<GraduatedExpellingStudent>() {
+		@Override
+		public GraduatedExpellingStudent createFromParcel(Parcel in) {
+			return new GraduatedExpellingStudent(in);
+		}
+		
+		@Override
+		public GraduatedExpellingStudent[] newArray(int size) {
+			return new GraduatedExpellingStudent[size];
+		}
+	};
+	
+	@Override
+	public int describeContents() {
+		return 0;
+	}
+	
+	@Override
+	public void writeToParcel(Parcel dest, int flags) {
+		dest.writeParcelable(commonInfo, flags);
+		dest.writeByte((byte) (hasHonoursDegree == null ? 0 : hasHonoursDegree ? 1 : 2));
+		dest.writeString(examDate);
+	}
+}
+
+\end{lstlisting}
+\textbf{GraduationThesisTopicsAttributes.java}
+\begin{lstlisting}[language=Java]
+package api.clients.middleware.entity;
+
+import android.os.Parcel;
+import lombok.Data;
+import lombok.EqualsAndHashCode;
+import lombok.NoArgsConstructor;
+import lombok.experimental.Accessors;
+
+import java.util.ArrayList;
+import java.util.List;
+
+@EqualsAndHashCode(callSuper = true)
+@NoArgsConstructor
+@Data
+@Accessors(fluent = true)
+public class GraduationThesisTopicsAttributes extends Attributes {
+	String group;
+	String speciality;
+	String studyType;
+	List<GraduationThesisTopicsStudent> students;
+	public static final Creator<GraduationThesisTopicsAttributes> CREATOR = new Creator<GraduationThesisTopicsAttributes>() {
+		@Override
+		public GraduationThesisTopicsAttributes createFromParcel(Parcel in) {
+			return new GraduationThesisTopicsAttributes(in);
+		}
+		
+		@Override
+		public GraduationThesisTopicsAttributes[] newArray(int size) {
+			return new GraduationThesisTopicsAttributes[size];
+		}
+	};
+	
+	public GraduationThesisTopicsAttributes(Parcel in) {
+		super(in);
+		this.group = in.readString();
+		this.speciality = in.readString();
+		this.studyType = in.readString();
+		this.students = new ArrayList<>();
+		in.readParcelableList(this.students, GraduationThesisTopicsStudent.class.getClassLoader());
+	}
+	
+	@Override
+	public void writeToParcel(Parcel dest, int flags) {
+		super.writeToParcel(dest, flags);
+		dest.writeString(group);
+		dest.writeString(speciality);
+		dest.writeString(studyType);
+		dest.writeParcelableList(students, flags);
+	}
+}
+
+\end{lstlisting}
+\textbf{GraduationThesisTopicsStudent.java}
+\begin{lstlisting}[language=Java]
+package api.clients.middleware.entity;
+
+import android.os.Parcel;
+import android.os.Parcelable;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.ToString;
+
+@Data
+@ToString
+@NoArgsConstructor
+public class GraduationThesisTopicsStudent implements Parcelable {
+	Student commonInfo;
+	String topic;
+	String academicAdvisorFullName;
+	
+	protected GraduationThesisTopicsStudent(Parcel in) {
+		commonInfo = in.readParcelable(Student.class.getClassLoader());
+		topic = in.readString();
+		academicAdvisorFullName = in.readString();
+	}
+	
+	public static final Creator<GraduationThesisTopicsStudent> CREATOR = new Creator<GraduationThesisTopicsStudent>() {
+		@Override
+		public GraduationThesisTopicsStudent createFromParcel(Parcel in) {
+			return new GraduationThesisTopicsStudent(in);
+		}
+		
+		@Override
+		public GraduationThesisTopicsStudent[] newArray(int size) {
+			return new GraduationThesisTopicsStudent[size];
+		}
+	};
+	
+	@Override
+	public int describeContents() {
+		return 0;
+	}
+	
+	@Override
+	public void writeToParcel(Parcel dest, int flags) {
+		dest.writeParcelable(commonInfo, flags);
+		dest.writeString(topic);
+		dest.writeString(academicAdvisorFullName);
+	}
+}
+
+\end{lstlisting}
+\textbf{PracticePermissionAttributes.java}
+\begin{lstlisting}[language=Java]
+package api.clients.middleware.entity;
+
+import android.os.Parcel;
+import android.os.Parcelable;
+import lombok.Data;
+import lombok.EqualsAndHashCode;
+import lombok.NoArgsConstructor;
+import lombok.experimental.Accessors;
+
+import java.util.List;
+
+@EqualsAndHashCode(callSuper = true)
+@NoArgsConstructor
+@Data
+@Accessors(fluent = true)
+public class PracticePermissionAttributes extends Attributes{
+	String practiceType;
+	String studyType;
+	String speciality;
+	Integer course;
+	String dateFrom;
+	String dateTo;
+	List<PracticePermissionStudent> students;
+	
+	protected PracticePermissionAttributes(Parcel in) {
+		super(in);
+		practiceType = in.readString();
+		studyType = in.readString();
+		speciality = in.readString();
+		if (in.readByte() == 0) {
+			course = null;
+		} else {
+			course = in.readInt();
+		}
+		dateFrom = in.readString();
+		dateTo = in.readString();
+		students = in.createTypedArrayList(PracticePermissionStudent.CREATOR);
+	}
+	
+	public static final Creator<PracticePermissionAttributes> CREATOR = new Creator<PracticePermissionAttributes>() {
+		@Override
+		public PracticePermissionAttributes createFromParcel(Parcel in) {
+			return new PracticePermissionAttributes(in);
+		}
+		
+		@Override
+		public PracticePermissionAttributes[] newArray(int size) {
+			return new PracticePermissionAttributes[size];
+		}
+	};
+	
+	@Override
+	public int describeContents() {
+		return 0;
+	}
+	
+	@Override
+	public void writeToParcel(Parcel dest, int flags) {
+		super.writeToParcel(dest, flags);
+		dest.writeString(practiceType);
+		dest.writeString(studyType);
+		dest.writeString(speciality);
+		if (course == null) {
+			dest.writeByte((byte) 0);
+		} else {
+			dest.writeByte((byte) 1);
+			dest.writeInt(course);
+		}
+		dest.writeString(dateFrom);
+		dest.writeString(dateTo);
+		dest.writeTypedList(students);
+	}
+}
+
+\end{lstlisting}
+\textbf{PracticePermissionStudent.java}
+\begin{lstlisting}[language=Java]
+package api.clients.middleware.entity;
+
+import android.os.Parcel;
+import android.os.Parcelable;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.ToString;
+
+@Data
+@ToString
+@NoArgsConstructor
+public class PracticePermissionStudent implements Parcelable {
+	Student commonInfo;
+	String practiceLocation;
+	String headFullName;
+	
+	protected PracticePermissionStudent(Parcel in) {
+		commonInfo = in.readParcelable(Student.class.getClassLoader());
+		practiceLocation = in.readString();
+		headFullName = in.readString();
+	}
+	
+	public static final Creator<PracticePermissionStudent> CREATOR = new Creator<PracticePermissionStudent>() {
+		@Override
+		public PracticePermissionStudent createFromParcel(Parcel in) {
+			return new PracticePermissionStudent(in);
+		}
+		
+		@Override
+		public PracticePermissionStudent[] newArray(int size) {
+			return new PracticePermissionStudent[size];
+		}
+	};
+	
+	@Override
+	public int describeContents() {
+		return 0;
+	}
+	
+	@Override
+	public void writeToParcel(Parcel dest, int flags) {
+		dest.writeParcelable(commonInfo, flags);
+		dest.writeString(practiceLocation);
+		dest.writeString(headFullName);
+	}
+}
+
+\end{lstlisting}
+% NO forms and middleware requests, reponces
+%\textbf{AuthActivity.java}
+%\begin{lstlisting}[language=Java]
+
+%\end{lstlisting}
